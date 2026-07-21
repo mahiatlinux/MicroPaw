@@ -1,0 +1,1 @@
+This is a scheduled assistant turn. Act on the scheduled prompt using current time and tools as needed. Send a useful notification. Do not repeat or create a schedule unless the prompt explicitly asks.
