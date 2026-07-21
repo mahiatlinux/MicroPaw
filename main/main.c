@@ -3,6 +3,7 @@
 #include <string.h>
 #include <fcntl.h>
 
+#include "esp_attr.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "esp_log.h"
@@ -21,6 +22,7 @@
 static StaticTask_t s_cli_task_buffer;
 static StackType_t s_cli_stack[CONFIG_MICROPAW_CLI_STACK];
 static TaskHandle_t s_cli_task;
+EXT_RAM_BSS_ATTR static char s_config_toml[MP_CONFIG_TOML_MAX + 1];
 static const char *TAG = "micropaw";
 
 static esp_err_t send_output(const char *chat_id, const char *text);
@@ -28,6 +30,7 @@ static esp_err_t schedule_output(const char *chat_id, const char *text);
 static esp_err_t setup_console(void);
 static void cli_task(void *argument);
 static void cli_line(char *line);
+static void receive_config(size_t length);
 static esp_err_t initialize(void);
 void app_main(void);
 
@@ -76,6 +79,34 @@ static void cli_task(void *argument)
     vTaskDelete(NULL);
 }
 
+static void receive_config(size_t length)
+{
+    printf("CONFIG READY\n");
+    fflush(stdout);
+    size_t received = 0;
+    while (received < length) {
+        size_t count = fread(s_config_toml + received, 1, length - received, stdin);
+        if (!count) {
+            clearerr(stdin);
+            printf("CONFIG ERROR read\n");
+            return;
+        }
+        received += count;
+    }
+    s_config_toml[length] = 0;
+    size_t error_line = 0;
+    esp_err_t error = mp_config_import_toml(s_config_toml, length, &error_line);
+    memset(s_config_toml, 0, length);
+    if (error == ESP_OK) {
+        printf("CONFIG OK\n");
+    } else if (error_line) {
+        printf("CONFIG ERROR %s line=%u\n", esp_err_to_name(error), (unsigned)error_line);
+    } else {
+        printf("CONFIG ERROR %s\n", esp_err_to_name(error));
+    }
+    fflush(stdout);
+}
+
 static void cli_line(char *line)
 {
     line[strcspn(line, "\r\n")] = 0;
@@ -93,6 +124,17 @@ static void cli_line(char *line)
         *value++ = 0;
         esp_err_t error = mp_config_set(key, value);
         printf("%s\n", error == ESP_OK ? "saved; reboot to apply network changes" : esp_err_to_name(error));
+    } else if (strncmp(line, "push-config ", 12) == 0) {
+        char *end;
+        unsigned long length = strtoul(line + 12, &end, 10);
+        while (*end == ' ') {
+            end++;
+        }
+        if (end == line + 12 || *end || length == 0 || length > MP_CONFIG_TOML_MAX) {
+            printf("usage: push-config BYTES (1-%u)\n", MP_CONFIG_TOML_MAX);
+        } else {
+            receive_config((size_t)length);
+        }
     } else if (strcmp(line, "erase-config YES") == 0) {
         printf("%s\n", esp_err_to_name(mp_config_erase()));
     } else if (strcmp(line, "metrics") == 0) {
@@ -104,7 +146,7 @@ static void cli_line(char *line)
     } else if (strcmp(line, "reboot") == 0) {
         esp_restart();
     } else if (line[0]) {
-        printf("commands: config, set KEY VALUE, erase-config YES, metrics, submit TEXT, reboot\n");
+        printf("commands: config, set KEY VALUE, push-config BYTES, erase-config YES, metrics, submit TEXT, reboot\n");
     }
 }
 

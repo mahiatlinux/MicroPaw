@@ -5,6 +5,8 @@
 
 #include "esp_err.h"
 
+#define MP_CONFIG_TOML_MAX 4096
+
 typedef struct {
     char wifi_ssid[33];
     char wifi_password[65];
@@ -23,5 +25,6 @@ typedef struct {
 esp_err_t mp_config_init(void);
 const mp_config_t *mp_config_get(void);
 esp_err_t mp_config_set(const char *key, const char *value);
+esp_err_t mp_config_import_toml(const char *text, size_t length, size_t *error_line);
 esp_err_t mp_config_erase(void);
 void mp_config_format(char *output, size_t size);

@@ -47,7 +47,7 @@ No source code is copied from these projects. MicroPaw uses independently writte
 - ESP-IDF 6.0 no longer includes its earlier `json` component. Use one bounded JSON slice parser for LLM events, Telegram, OAuth responses and tool arguments instead of adding cJSON as an external dependency.
 - Require owner-chat authorization. Require short-lived confirmation IDs for email and calendar writes. Treat fetched web text as untrusted data and never as instructions.
 - Use direct Gmail and Calendar REST calls with an externally provisioned refresh token. No relay is needed after consent. OAuth browser consent is outside the ESP32.
-- Provision secrets over the local serial console into NVS. Never compile or commit credentials. Provide a separate production security config for NVS and flash encryption, but do not enable irreversible eFuse settings during development flashing.
+- Provision secrets over the local serial console, individually or through a bounded TOML push, into NVS. Never compile or commit credentials. Provide a separate production security config for NVS and flash encryption, but do not enable irreversible eFuse settings during development flashing.
 - Make Telegram, search, page fetch, Gmail and Calendar removable through Kconfig. Exclude GPIO, WebSocket, OTA, AP portal, Lua, file tools and unrelated hardware features.
 - Generate build size reports from `idf.py size` and `size-components`. Print runtime heap and task watermarks from the board. Compare current zclaw and MimiClaw builds on the same ESP32-S3 toolchain when their pinned IDF versions permit it.
 
@@ -57,7 +57,7 @@ All three projects were built locally on 2026-07-21 for ESP32-S3 with 16 MB flas
 
 | Project | Source revision | ESP-IDF | Image bytes | Padded binary | Static DIRAM | External BSS |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| MicroPaw | current workspace | 6.0.2 | 877,344 | 877,456 | 133,760 | 120,388 |
+| MicroPaw | `98c026e` before TOML push | 6.0.2 | 877,344 | 877,456 | 133,760 | 120,388 |
 | zclaw | `e3ad271244c1f2e01f4df6e81c2bab346e95d1b1` | 5.4 | 847,950 | 848,064 | 173,731 | 0 reported |
 | MimiClaw | `bb10ea0149080d506d920c09054f4c5b20409de2` | 5.5.2 | 1,180,553 | 1,180,672 | 135,783 | 0 reported |
 
