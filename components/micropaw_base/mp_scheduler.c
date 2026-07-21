@@ -1,0 +1,233 @@
+#include "mp_scheduler.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "mp_metrics.h"
+#include "nvs.h"
+#include "sdkconfig.h"
+
+#define SCHEDULE_MAGIC 0x4d505331U
+
+typedef struct {
+    uint32_t id;
+    int64_t next_epoch;
+    uint32_t repeat_seconds;
+    char chat_id[MP_CHAT_ID_LEN];
+    char text[MP_SCHEDULE_TEXT_LEN];
+    bool active;
+} schedule_record_t;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t next_id;
+    schedule_record_t records[MP_SCHEDULE_SLOTS];
+} schedule_store_t;
+
+static schedule_store_t s_store;
+static StaticSemaphore_t s_lock_buffer;
+static SemaphoreHandle_t s_lock;
+static StaticTask_t s_task_buffer;
+static StackType_t s_task_stack[CONFIG_MICROPAW_SCHEDULER_STACK];
+static TaskHandle_t s_task;
+static mp_schedule_emit_fn s_emit;
+
+static esp_err_t load_store(void);
+static esp_err_t save_store(void);
+static int free_slot(void);
+static void scheduler_task(void *argument);
+static void scheduler_check(void);
+esp_err_t mp_scheduler_init(mp_schedule_emit_fn emit);
+esp_err_t mp_scheduler_start(void);
+esp_err_t mp_scheduler_add(const char *chat_id, const char *text, uint32_t delay_seconds,
+                           uint32_t repeat_seconds, uint32_t *id);
+esp_err_t mp_scheduler_delete(uint32_t id);
+void mp_scheduler_format(char *output, size_t size);
+
+static esp_err_t load_store(void)
+{
+    nvs_handle_t handle;
+    size_t size = sizeof(s_store);
+    esp_err_t error = nvs_open("mp_schedule", NVS_READONLY, &handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+    error = nvs_get_blob(handle, "jobs", &s_store, &size);
+    nvs_close(handle);
+    return error;
+}
+
+static esp_err_t save_store(void)
+{
+    nvs_handle_t handle;
+    esp_err_t error = nvs_open("mp_schedule", NVS_READWRITE, &handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+    error = nvs_set_blob(handle, "jobs", &s_store, sizeof(s_store));
+    if (error == ESP_OK) {
+        error = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return error;
+}
+
+static int free_slot(void)
+{
+    for (int index = 0; index < MP_SCHEDULE_SLOTS; index++) {
+        if (!s_store.records[index].active) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+static void scheduler_task(void *argument)
+{
+    while (true) {
+        scheduler_check();
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+static void scheduler_check(void)
+{
+    schedule_record_t due[MP_SCHEDULE_SLOTS];
+    size_t count = 0;
+    int64_t now = (int64_t)time(NULL);
+    if (now < 1700000000) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int index = 0; index < MP_SCHEDULE_SLOTS; index++) {
+        schedule_record_t *record = &s_store.records[index];
+        if (!record->active || record->next_epoch > now) {
+            continue;
+        }
+        due[count++] = *record;
+        if (record->repeat_seconds) {
+            do {
+                record->next_epoch += record->repeat_seconds;
+            } while (record->next_epoch <= now);
+        } else {
+            record->active = false;
+        }
+    }
+    if (count) {
+        save_store();
+    }
+    xSemaphoreGive(s_lock);
+    for (size_t index = 0; index < count; index++) {
+        s_emit(due[index].chat_id, due[index].text);
+    }
+}
+
+esp_err_t mp_scheduler_init(mp_schedule_emit_fn emit)
+{
+    if (!emit) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_emit = emit;
+    s_lock = xSemaphoreCreateMutexStatic(&s_lock_buffer);
+    if (!s_lock) {
+        return ESP_ERR_NO_MEM;
+    }
+    memset(&s_store, 0, sizeof(s_store));
+    if (load_store() != ESP_OK || s_store.magic != SCHEDULE_MAGIC) {
+        memset(&s_store, 0, sizeof(s_store));
+        s_store.magic = SCHEDULE_MAGIC;
+        s_store.next_id = 1;
+    }
+    return ESP_OK;
+}
+
+esp_err_t mp_scheduler_start(void)
+{
+    if (s_task) {
+        return ESP_OK;
+    }
+    s_task = xTaskCreateStaticPinnedToCore(scheduler_task, "mp_schedule",
+                                           CONFIG_MICROPAW_SCHEDULER_STACK, NULL, 4,
+                                           s_task_stack, &s_task_buffer, 0);
+    if (s_task) {
+        mp_metrics_register("scheduler", s_task);
+    }
+    return s_task ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+esp_err_t mp_scheduler_add(const char *chat_id, const char *text, uint32_t delay_seconds,
+                           uint32_t repeat_seconds, uint32_t *id)
+{
+    if (!chat_id || !text || !text[0] || delay_seconds == 0 ||
+        strlen(chat_id) >= MP_CHAT_ID_LEN || strlen(text) >= MP_SCHEDULE_TEXT_LEN) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    int64_t now = (int64_t)time(NULL);
+    if (now < 1700000000) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int slot = free_slot();
+    if (slot < 0) {
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_NO_MEM;
+    }
+    schedule_record_t *record = &s_store.records[slot];
+    memset(record, 0, sizeof(*record));
+    record->id = s_store.next_id++;
+    record->next_epoch = now + delay_seconds;
+    record->repeat_seconds = repeat_seconds;
+    record->active = true;
+    strlcpy(record->chat_id, chat_id, sizeof(record->chat_id));
+    strlcpy(record->text, text, sizeof(record->text));
+    esp_err_t error = save_store();
+    if (error == ESP_OK && id) {
+        *id = record->id;
+    }
+    xSemaphoreGive(s_lock);
+    return error;
+}
+
+esp_err_t mp_scheduler_delete(uint32_t id)
+{
+    esp_err_t error = ESP_ERR_NOT_FOUND;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int index = 0; index < MP_SCHEDULE_SLOTS; index++) {
+        if (s_store.records[index].active && s_store.records[index].id == id) {
+            s_store.records[index].active = false;
+            error = save_store();
+            break;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return error;
+}
+
+void mp_scheduler_format(char *output, size_t size)
+{
+    if (size == 0) {
+        return;
+    }
+    output[0] = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int index = 0; index < MP_SCHEDULE_SLOTS; index++) {
+        schedule_record_t *record = &s_store.records[index];
+        if (!record->active) {
+            continue;
+        }
+        size_t used = strnlen(output, size);
+        if (used < size) {
+            snprintf(output + used, size - used, "id=%lu at=%lld repeat=%lu text=%s\n",
+                     (unsigned long)record->id, (long long)record->next_epoch,
+                     (unsigned long)record->repeat_seconds, record->text);
+        }
+    }
+    xSemaphoreGive(s_lock);
+    if (!output[0]) {
+        strlcpy(output, "No scheduled jobs.", size);
+    }
+}
