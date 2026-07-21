@@ -16,6 +16,7 @@ The current build targets the detected ESP32-S3 revision 0.2 with 16 MB flash, 8
 - Direct, bounded page fetching with incremental HTML text extraction
 - Bounded RSS and Atom parsing
 - One shared HTTPS mutex, explicit connection lifetime and CA bundle validation
+- Bounded TOML configuration pushes over USB serial with one NVS commit
 - Build-time removal of Telegram, search, page fetch, Wikipedia, arXiv, RSS, Gmail and Calendar
 - Static task stacks, fixed work buffers and live heap and stack measurements
 
@@ -37,7 +38,28 @@ The selected board uses USB Serial/JTAG for the console. A different ESP32-S3 bo
 
 ## Configure without committed secrets
 
-Open a 115200 baud serial terminal and enter one setting per line:
+Create `secrets/credentials.toml`; the `secrets/` directory is ignored by Git:
+
+```toml
+wifi_ssid = "NETWORK"
+wifi_password = "PASSWORD"
+telegram_token = "BOT_TOKEN"
+owner_chat_id = "NUMERIC_CHAT_ID"
+llm_provider = "openai"
+llm_api_key = "API_KEY"
+llm_model = "gpt-5.6-luna"
+timezone = "NZST-12NZDT,M9.5.0,M4.1.0/3"
+```
+
+Push it over USB serial and reboot:
+
+```powershell
+python scripts/push_config.py COM3 secrets/credentials.toml --reboot
+```
+
+The file may contain any subset of the keys shown by `config`. MicroPaw accepts top-level keys with single-line quoted string values and comments. Double-quoted values support `\"` and `\\`; single-quoted values preserve text literally. It rejects unknown keys, duplicates, tables, arrays and oversized values before committing the document to NVS. The maximum file size is 4096 bytes.
+
+Values can also be set individually. Open a 115200 baud serial terminal and enter one setting per line:
 
 ```text
 set wifi_ssid NETWORK
@@ -51,7 +73,7 @@ set timezone NZST-12NZDT,M9.5.0,M4.1.0/3
 reboot
 ```
 
-`config` reports which secrets are set without printing their values. `erase-config YES` removes every stored configuration value. `metrics` prints heap minima, largest blocks and active-task stack watermarks. `submit TEXT` sends a local test request to the agent queue. LLM provider changes apply to the next request. Reboot after changing Wi-Fi, Telegram or timezone values.
+`config` reports which secrets are set without printing their values. `push-config BYTES` is the bounded serial protocol used by the push script. `erase-config YES` removes every stored configuration value. `metrics` prints heap minima, largest blocks and active-task stack watermarks. `submit TEXT` sends a local test request to the agent queue. LLM provider changes apply to the next request. Reboot after changing Wi-Fi, Telegram or timezone values.
 
 ## LLM providers
 
@@ -128,4 +150,4 @@ Run `scripts/report.ps1 -Port COM3` from an exported ESP-IDF shell. It writes bu
 
 ## Current test limits
 
-Build, flash, PSRAM startup, NVS defaults, scheduler startup and serial commands have been tested on the connected board. Wi-Fi, Telegram, OpenAI, OpenRouter, custom inference, DuckDuckGo, specialised searches, page fetching and Google writes have not been exercised on-board because no user credentials or network configuration were provisioned. Gmail and Calendar also remain disabled in the measured default build.
+Build, flash, PSRAM startup, NVS defaults, scheduler startup and the original serial commands have been tested on the connected board. The TOML push is not yet hardware-tested. Wi-Fi, Telegram, OpenAI, OpenRouter, custom inference, DuckDuckGo, specialised searches, page fetching and Google writes have not been exercised on-board because no user credentials or network configuration were provisioned. Gmail and Calendar also remain disabled in the measured default build.
