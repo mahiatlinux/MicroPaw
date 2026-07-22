@@ -8,7 +8,7 @@
 #include "freertos/semphr.h"
 #include "nvs.h"
 
-#define MEMORY_MAGIC 0x4d504d31U
+#define MEMORY_MAGIC 0x4d504d32U
 #define HISTORY_MAGIC 0x4d504832U
 
 typedef struct {
@@ -35,7 +35,7 @@ typedef struct {
     history_record_t records[MP_HISTORY_SLOTS];
 } history_store_t;
 
-static memory_store_t s_memory;
+EXT_RAM_BSS_ATTR static memory_store_t s_memory;
 EXT_RAM_BSS_ATTR static history_store_t s_history;
 static StaticSemaphore_t s_lock_buffer;
 static SemaphoreHandle_t s_lock;

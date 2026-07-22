@@ -37,7 +37,8 @@ void mp_metrics_format(char *output, size_t size)
                         "heap_free=%lu heap_min=%lu heap_largest=%lu\n"
                         "internal_free=%lu internal_min=%lu internal_largest=%lu\n"
                         "psram_free=%lu psram_min=%lu psram_largest=%lu\n"
-                        "text_capacity=%u tool_args_capacity=%u tool_result_capacity=%u llm_output_tokens=%s\n",
+                        "text_capacity=%u tool_args_capacity=%u tool_result_capacity=%u llm_output_tokens=%s\n"
+                        "memory_slots=%u memory_entry_capacity=%u\n",
                         (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
                         (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
                         (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
@@ -49,7 +50,8 @@ void mp_metrics_format(char *output, size_t size)
                         (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
                         (unsigned)MP_REPLY_LEN, (unsigned)MP_TOOL_ARGS_LEN,
                         (unsigned)MP_TOOL_RESULT_LEN,
-                        mp_config_get()->llm_max_output_tokens);
+                        mp_config_get()->llm_max_output_tokens,
+                        (unsigned)MP_MEMORY_SLOTS, (unsigned)(MP_MEMORY_TEXT_LEN - 1));
     if (used < 0 || (size_t)used >= size) {
         output[size - 1] = 0;
         return;

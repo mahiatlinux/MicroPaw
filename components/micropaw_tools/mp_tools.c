@@ -84,7 +84,7 @@ esp_err_t mp_tools_execute_scheduled(const char *text, const mp_tool_context_t *
                                      char *output, size_t size);
 
 static const tool_t s_tools[] = {
-    {"memory_save", "{\"type\":\"function\",\"name\":\"memory_save\",\"description\":\"Save one durable fact for later conversations.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"note\":{\"type\":\"string\"}},\"required\":[\"note\"],\"additionalProperties\":false}}", memory_save},
+    {"memory_save", "{\"type\":\"function\",\"name\":\"memory_save\",\"description\":\"Save one durable fact of up to 1023 bytes for later conversations. Save separate facts with separate calls.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"note\":{\"type\":\"string\"}},\"required\":[\"note\"],\"additionalProperties\":false}}", memory_save},
     {"memory_list", "{\"type\":\"function\",\"name\":\"memory_list\",\"description\":\"Read durable facts.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", memory_list},
     {"schedule_add", "{\"type\":\"function\",\"name\":\"schedule_add\",\"description\":\"Schedule a future assistant turn. repeat_seconds is zero for a one-time job.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"prompt\",\"delay_seconds\",\"repeat_seconds\"],\"additionalProperties\":false}}", schedule_add},
     {"schedule_list", "{\"type\":\"function\",\"name\":\"schedule_list\",\"description\":\"List scheduled jobs.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", schedule_list},
@@ -157,8 +157,12 @@ static bool json_uint(const char *json, const char *name, uint32_t *value)
 static esp_err_t memory_save(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
 {
     (void)context;
-    esp_err_t error = json_string(arguments, "note", s_arg1, sizeof(s_arg1)) ?
-                      mp_memory_save(s_arg1) : ESP_ERR_INVALID_ARG;
+    if (!json_string(arguments, "note", s_arg1, sizeof(s_arg1)) ||
+        !s_arg1[0] || strlen(s_arg1) >= MP_MEMORY_TEXT_LEN) {
+        strlcpy(output, "Memory note is missing or exceeds 1023 bytes.", size);
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t error = mp_memory_save(s_arg1);
     if (error == ESP_OK) {
         strlcpy(output, "Memory saved.", size);
     }
