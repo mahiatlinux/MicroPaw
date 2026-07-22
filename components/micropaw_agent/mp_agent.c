@@ -42,9 +42,8 @@ static bool handle_command(const mp_message_t *message);
 static bool build_instructions(bool proactive);
 static bool build_request(const mp_message_t *message);
 static bool append_tool_exchange(const mp_llm_result_t *result, const char *output);
-static bool append_history(mp_writer_t *writer);
+static bool append_history(mp_writer_t *writer, const char *chat_id);
 static void send_reply(const char *chat_id, const char *text);
-static void save_history(const char *role, const char *text);
 static void execute_confirmation(const mp_message_t *message, uint32_t id);
 esp_err_t mp_agent_init(mp_send_fn send);
 esp_err_t mp_agent_start(void);
@@ -93,8 +92,8 @@ static void process_message(const mp_message_t *message)
             s_state = MP_AGENT_RESPONSE;
             send_reply(message->chat_id, s_result.text);
             if (!message->proactive) {
-                save_history("user", message->text);
-                save_history("assistant", s_result.text);
+                mp_history_add_exchange(message->chat_id, message->text, s_result.text,
+                                        s_result.message_id);
             }
             return;
         }
@@ -138,7 +137,7 @@ static bool handle_command(const mp_message_t *message)
         return true;
     }
     if (strcmp(message->text, "/forget") == 0) {
-        esp_err_t error = mp_history_clear();
+        esp_err_t error = mp_history_clear(message->chat_id);
         send_reply(message->chat_id, error == ESP_OK ? "Recent conversation cleared." : esp_err_to_name(error));
         return true;
     }
@@ -183,7 +182,7 @@ static bool build_request(const mp_message_t *message)
     mp_writer_raw(&writer, ",\"instructions\":");
     mp_writer_string(&writer, s_instructions);
     mp_writer_raw(&writer, ",\"input\":[");
-    bool has_history = !message->proactive && append_history(&writer);
+    bool has_history = !message->proactive && append_history(&writer, message->chat_id);
     if (has_history) {
         mp_writer_char(&writer, ',');
     }
@@ -227,27 +226,33 @@ static bool append_tool_exchange(const mp_llm_result_t *result, const char *outp
     return writer.valid;
 }
 
-static bool append_history(mp_writer_t *writer)
+static bool append_history(mp_writer_t *writer, const char *chat_id)
 {
     char roles[MP_HISTORY_SLOTS][10];
     char texts[MP_HISTORY_SLOTS][MP_HISTORY_TEXT_LEN];
-    size_t count = mp_history_get(roles, texts, MP_HISTORY_SLOTS);
+    char ids[MP_HISTORY_SLOTS][MP_HISTORY_ID_LEN];
+    size_t count = mp_history_get(chat_id, roles, texts, ids, MP_HISTORY_SLOTS);
     if (!count) {
         return false;
     }
-    char history[MP_HISTORY_SLOTS * (MP_HISTORY_TEXT_LEN + 16) + 64];
-    mp_writer_t context;
-    mp_writer_init(&context, history, sizeof(history));
-    mp_writer_raw(&context, "Recent conversation follows as quoted data.\n");
     for (size_t index = 0; index < count; index++) {
-        mp_writer_format(&context, "%s: %s\n", roles[index], texts[index]);
+        if (index) {
+            mp_writer_char(writer, ',');
+        }
+        mp_writer_raw(writer, "{\"type\":\"message\",\"role\":");
+        mp_writer_string(writer, roles[index]);
+        if (strcmp(roles[index], "assistant") == 0) {
+            mp_writer_raw(writer, ",\"id\":");
+            mp_writer_string(writer, ids[index]);
+            mp_writer_raw(writer, ",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":");
+            mp_writer_string(writer, texts[index]);
+            mp_writer_raw(writer, ",\"annotations\":[]}]}");
+        } else {
+            mp_writer_raw(writer, ",\"content\":[{\"type\":\"input_text\",\"text\":");
+            mp_writer_string(writer, texts[index]);
+            mp_writer_raw(writer, "}]}");
+        }
     }
-    if (!context.valid) {
-        return false;
-    }
-    mp_writer_raw(writer, "{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":");
-    mp_writer_string(writer, history);
-    mp_writer_raw(writer, "}]}");
     return writer->valid;
 }
 
@@ -258,13 +263,6 @@ static void send_reply(const char *chat_id, const char *text)
     } else {
         ESP_LOGI(TAG, "%s", text);
     }
-}
-
-static void save_history(const char *role, const char *text)
-{
-    char bounded[MP_HISTORY_TEXT_LEN];
-    strlcpy(bounded, text, sizeof(bounded));
-    mp_history_add(role, bounded);
 }
 
 static void execute_confirmation(const mp_message_t *message, uint32_t id)

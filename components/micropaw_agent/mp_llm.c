@@ -76,14 +76,18 @@ static void parse_event(mp_llm_result_t *result, const char *data)
         size_t item_length;
         char item_type[32];
         if (mp_json_get_slice(data, length, "item", &item, &item_length) &&
-            mp_json_get_string(item, item_length, "type", item_type, sizeof(item_type)) &&
-            strcmp(item_type, "function_call") == 0) {
-            result->has_tool = true;
-            mp_json_get_string(item, item_length, "id", result->item_id, sizeof(result->item_id));
-            mp_json_get_string(item, item_length, "name", result->tool, sizeof(result->tool));
-            mp_json_get_string(item, item_length, "call_id", result->call_id, sizeof(result->call_id));
-            mp_json_get_string(item, item_length, "arguments", result->arguments,
-                               sizeof(result->arguments));
+            mp_json_get_string(item, item_length, "type", item_type, sizeof(item_type))) {
+            if (strcmp(item_type, "message") == 0) {
+                mp_json_get_string(item, item_length, "id", result->message_id,
+                                   sizeof(result->message_id));
+            } else if (strcmp(item_type, "function_call") == 0) {
+                result->has_tool = true;
+                mp_json_get_string(item, item_length, "id", result->item_id, sizeof(result->item_id));
+                mp_json_get_string(item, item_length, "name", result->tool, sizeof(result->tool));
+                mp_json_get_string(item, item_length, "call_id", result->call_id, sizeof(result->call_id));
+                mp_json_get_string(item, item_length, "arguments", result->arguments,
+                                   sizeof(result->arguments));
+            }
         }
     } else if (strcmp(type, "response.function_call_arguments.delta") == 0) {
         if (mp_json_get_string(data, length, "delta", s_value, sizeof(s_value))) {
@@ -205,5 +209,6 @@ esp_err_t mp_llm_stream(const char *body, mp_llm_result_t *result)
                             !result->arguments[0])) {
         return ESP_ERR_INVALID_RESPONSE;
     }
-    return result->has_tool || result->text[0] ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+    return result->has_tool || (result->text[0] && result->message_id[0]) ?
+           ESP_OK : ESP_ERR_INVALID_RESPONSE;
 }

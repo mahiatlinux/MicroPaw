@@ -10,6 +10,7 @@
 
 typedef struct {
     char text[MP_REPLY_LEN];
+    char message_id[MP_ITEM_ID_LEN];
     char item_id[MP_ITEM_ID_LEN];
     char call_id[MP_CALL_ID_LEN];
     char tool[MP_TOOL_NAME_LEN];
