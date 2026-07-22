@@ -23,4 +23,7 @@ bool mp_json_get_string(const char *json, size_t length, const char *key,
                         char *output, size_t size);
 bool mp_json_get_int64(const char *json, size_t length, const char *key, int64_t *value);
 bool mp_json_get_bool(const char *json, size_t length, const char *key, bool *value);
+bool mp_json_decode_string(const char *value, size_t length, char *output, size_t size);
+bool mp_json_next(const char *array, size_t length, size_t *offset,
+                  const char **value, size_t *value_length);
 bool mp_json_first(const char *array, size_t length, const char **value, size_t *value_length);

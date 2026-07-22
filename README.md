@@ -42,18 +42,22 @@ python scripts/push_config.py PORT secrets/credentials.toml --reboot
 
 The TOML file stays on the computer. `allowed` runs Gmail or Calendar actions immediately, `permission` asks through Telegram, and `disabled` turns the tool off.
 
-The agent can run 12 sequential tool calls per turn. Kconfig can lower the limit.
+The agent has no fixed tool-call or page-count limit. Gmail and Calendar listings return numbered pages of up to 20 records with a continuation token. The agent can keep paging until the task is done. Device request capacity and external API limits still apply.
 
 OpenAI, OpenRouter and custom Responses-compatible HTTPS endpoints use the same streamed agent path. The default build allows 32,768 output tokens and 128 KB of reply or immediate-email text. Both values are configurable in Kconfig. Gmail uploads are base64url encoded while they are sent, so encoded and JSON copies are not kept in RAM. Scheduled emails are smaller because they must fit persistent NVS job storage.
+
+Gmail supports numbered search and listing, message reads, send, scheduled send, read state, archive, inbox, star, spam, trash and restore. Calendar supports numbered listing and search, event details, create, partial update and delete. Permanent Gmail deletion is excluded. The narrower `gmail.modify` scope handles the implemented mailbox actions without granting immediate hard deletion.
 
 Persistent memory holds eight durable entries of up to 1,023 bytes each. Separate facts should use separate entries.
 
 Google OAuth needs these scopes in one offline grant:
 
 ```text
-https://www.googleapis.com/auth/gmail.send
+https://www.googleapis.com/auth/gmail.modify
 https://www.googleapis.com/auth/calendar.events.owned
 ```
+
+An existing refresh token created with only `gmail.send` must be replaced after granting `gmail.modify`.
 
 ## Commands
 
