@@ -7,9 +7,13 @@
 static void append_char(mp_html_text_t *text, char value);
 static void append_entity(mp_html_text_t *text);
 static int entity_value(const char *entity);
+static void parser_tag(mp_html_parser_t *parser);
 void mp_html_text_init(mp_html_text_t *text, char *output, size_t size);
 void mp_html_text_push(mp_html_text_t *text, char value);
 void mp_html_text_finish(mp_html_text_t *text);
+void mp_html_parser_init(mp_html_parser_t *parser, char *output, size_t size);
+bool mp_html_parser_push(mp_html_parser_t *parser, char value);
+void mp_html_parser_finish(mp_html_parser_t *parser);
 
 static void append_char(mp_html_text_t *text, char value)
 {
@@ -101,4 +105,53 @@ void mp_html_text_finish(mp_html_text_t *text)
 {
     text->entity_length = 0;
     text->space = false;
+}
+
+static void parser_tag(mp_html_parser_t *parser)
+{
+    parser->tag[parser->tag_length] = 0;
+    if (strcmp(parser->tag, "script") == 0 || strcmp(parser->tag, "style") == 0 ||
+        strcmp(parser->tag, "noscript") == 0) {
+        parser->suppress = true;
+    } else if (strcmp(parser->tag, "/script") == 0 || strcmp(parser->tag, "/style") == 0 ||
+               strcmp(parser->tag, "/noscript") == 0) {
+        parser->suppress = false;
+    } else if (!parser->suppress && (parser->tag[0] == '/' || strcmp(parser->tag, "br") == 0 ||
+               strcmp(parser->tag, "p") == 0 || strcmp(parser->tag, "li") == 0)) {
+        mp_html_text_push(&parser->text, ' ');
+    }
+    parser->tag_length = 0;
+}
+
+void mp_html_parser_init(mp_html_parser_t *parser, char *output, size_t size)
+{
+    memset(parser, 0, sizeof(*parser));
+    mp_html_text_init(&parser->text, output, size);
+}
+
+bool mp_html_parser_push(mp_html_parser_t *parser, char value)
+{
+    if (parser->in_tag) {
+        if (value == '>') {
+            parser->in_tag = false;
+            parser_tag(parser);
+        } else if (isspace((unsigned char)value)) {
+            parser->tag_done = true;
+        } else if (!parser->tag_done && parser->tag_length + 1 < sizeof(parser->tag) &&
+                   (isalpha((unsigned char)value) || (value == '/' && parser->tag_length == 0))) {
+            parser->tag[parser->tag_length++] = (char)tolower((unsigned char)value);
+        }
+    } else if (value == '<') {
+        parser->in_tag = true;
+        parser->tag_length = 0;
+        parser->tag_done = false;
+    } else if (!parser->suppress) {
+        mp_html_text_push(&parser->text, value);
+    }
+    return parser->text.length + 1 < parser->text.size;
+}
+
+void mp_html_parser_finish(mp_html_parser_t *parser)
+{
+    mp_html_text_finish(&parser->text);
 }

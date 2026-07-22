@@ -27,7 +27,7 @@ extern const char scheduled_txt[] asm("_binary_scheduled_txt_start");
 EXT_RAM_BSS_ATTR static char s_request[AGENT_REQUEST_LEN];
 EXT_RAM_BSS_ATTR static char s_instructions[AGENT_INSTRUCTIONS_LEN];
 EXT_RAM_BSS_ATTR static char s_memory_context[MP_MEMORY_SLOTS * (MP_MEMORY_TEXT_LEN + 3)];
-EXT_RAM_BSS_ATTR static char s_tools[8192];
+EXT_RAM_BSS_ATTR static char s_tools[32768];
 EXT_RAM_BSS_ATTR static char s_tool_trace[AGENT_TRACE_LEN];
 EXT_RAM_BSS_ATTR static char s_tool_output[MP_TOOL_RESULT_LEN];
 EXT_RAM_BSS_ATTR static char s_confirm_tool[MP_TOOL_NAME_LEN];
@@ -101,7 +101,6 @@ static void process_message(const mp_message_t *message)
         send_reply(message->chat_id, "The request exceeded the device buffer.");
         return;
     }
-    int tool_calls = 0;
     while (true) {
         s_state = MP_AGENT_INFERENCE;
         esp_err_t error = mp_llm_stream(s_request, &s_result);
@@ -119,14 +118,6 @@ static void process_message(const mp_message_t *message)
             }
             return;
         }
-        if (tool_calls >= CONFIG_MICROPAW_MAX_TOOL_ROUNDS) {
-            s_state = MP_AGENT_ERROR;
-            snprintf(s_tool_output, sizeof(s_tool_output), "The tool-call limit was reached after %d calls.",
-                     tool_calls);
-            send_reply(message->chat_id, s_tool_output);
-            return;
-        }
-        tool_calls++;
         s_state = MP_AGENT_TOOL;
         mp_tool_context_t context = {0};
         strlcpy(context.chat_id, message->chat_id, sizeof(context.chat_id));

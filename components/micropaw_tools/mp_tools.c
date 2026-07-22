@@ -44,14 +44,13 @@ typedef enum {
 } tool_mode_t;
 
 EXT_RAM_BSS_ATTR static char s_arg1[CONFIG_MICROPAW_WORK_TEXT_BYTES];
+EXT_RAM_BSS_ATTR static char s_arg3[1024];
 #if CONFIG_MICROPAW_GMAIL || CONFIG_MICROPAW_CALENDAR
 EXT_RAM_BSS_ATTR static char s_arg2[512];
-#endif
-#if CONFIG_MICROPAW_WEB_SEARCH || CONFIG_MICROPAW_GMAIL || CONFIG_MICROPAW_CALENDAR
-EXT_RAM_BSS_ATTR static char s_arg3[256];
+EXT_RAM_BSS_ATTR static char s_arg4[128];
 #endif
 #if CONFIG_MICROPAW_CALENDAR
-EXT_RAM_BSS_ATTR static char s_arg4[128];
+EXT_RAM_BSS_ATTR static char s_arg5[128];
 #endif
 
 static bool json_string(const char *json, const char *name, char *output, size_t size);
@@ -71,9 +70,18 @@ static esp_err_t rss_read(const char *arguments, const mp_tool_context_t *contex
 #if CONFIG_MICROPAW_GMAIL
 static esp_err_t email_send(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t email_schedule(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t email_search(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t email_get(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t email_modify(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t email_trash(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t email_untrash(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 #endif
 #if CONFIG_MICROPAW_CALENDAR
 static esp_err_t calendar_create(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t calendar_list(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t calendar_get(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t calendar_update(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t calendar_delete(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 #endif
 esp_err_t mp_tools_init(void);
 bool mp_tools_json(char *output, size_t size);
@@ -103,9 +111,18 @@ static const tool_t s_tools[] = {
 #if CONFIG_MICROPAW_GMAIL
     {"email_send", "{\"type\":\"function\",\"name\":\"email_send\",\"description\":\"Send a plain-text email through Gmail. The body uses the configured PSRAM work-text capacity.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"to\",\"subject\",\"body\"],\"additionalProperties\":false}}", email_send},
     {"email_schedule", "{\"type\":\"function\",\"name\":\"email_schedule\",\"description\":\"Schedule an exact plain-text Gmail email. Persistent scheduled messages are smaller than immediate emails. Use this instead of schedule_add for delayed email. The current email permission is checked when it is due.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"}},\"required\":[\"to\",\"subject\",\"body\",\"delay_seconds\"],\"additionalProperties\":false}}", email_schedule},
+    {"email_search", "{\"type\":\"function\",\"name\":\"email_search\",\"description\":\"Search or list Gmail messages with Gmail query syntax. Returns a numbered page. Pass the returned page token to continue with no total-page limit. Use an empty query to list mail and an empty token for the first page.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"page_token\":{\"type\":\"string\"},\"page_size\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"required\":[\"query\",\"page_token\",\"page_size\"],\"additionalProperties\":false}}", email_search},
+    {"email_get", "{\"type\":\"function\",\"name\":\"email_get\",\"description\":\"Read one Gmail message by the ID returned by email_search.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", email_get},
+    {"email_modify", "{\"type\":\"function\",\"name\":\"email_modify\",\"description\":\"Change a Gmail message state.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"action\":{\"type\":\"string\",\"enum\":[\"mark_read\",\"mark_unread\",\"archive\",\"move_to_inbox\",\"star\",\"unstar\",\"mark_spam\",\"not_spam\"]}},\"required\":[\"id\",\"action\"],\"additionalProperties\":false}}", email_modify},
+    {"email_trash", "{\"type\":\"function\",\"name\":\"email_trash\",\"description\":\"Move one Gmail message to trash.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", email_trash},
+    {"email_untrash", "{\"type\":\"function\",\"name\":\"email_untrash\",\"description\":\"Restore one Gmail message from trash.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", email_untrash},
 #endif
 #if CONFIG_MICROPAW_CALENDAR
     {"calendar_create", "{\"type\":\"function\",\"name\":\"calendar_create\",\"description\":\"Create a Google Calendar event. Call time_now before resolving relative or partial dates. Never guess a missing month or year.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"start_rfc3339\":{\"type\":\"string\"},\"end_rfc3339\":{\"type\":\"string\"}},\"required\":[\"summary\",\"start_rfc3339\",\"end_rfc3339\"],\"additionalProperties\":false}}", calendar_create},
+    {"calendar_list", "{\"type\":\"function\",\"name\":\"calendar_list\",\"description\":\"List or search Google Calendar events. Returns a numbered page. Pass the returned page token to continue with no total-page limit. Empty query or time bounds are allowed. Call time_now before resolving relative dates.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"time_min_rfc3339\":{\"type\":\"string\"},\"time_max_rfc3339\":{\"type\":\"string\"},\"page_token\":{\"type\":\"string\"},\"page_size\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"required\":[\"query\",\"time_min_rfc3339\",\"time_max_rfc3339\",\"page_token\",\"page_size\"],\"additionalProperties\":false}}", calendar_list},
+    {"calendar_get", "{\"type\":\"function\",\"name\":\"calendar_get\",\"description\":\"Read one Google Calendar event by ID.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", calendar_get},
+    {"calendar_update", "{\"type\":\"function\",\"name\":\"calendar_update\",\"description\":\"Update supplied fields on a Google Calendar event. Empty fields are left unchanged. Call time_now before resolving relative dates.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"summary\":{\"type\":\"string\"},\"start_rfc3339\":{\"type\":\"string\"},\"end_rfc3339\":{\"type\":\"string\"}},\"required\":[\"id\",\"summary\",\"start_rfc3339\",\"end_rfc3339\"],\"additionalProperties\":false}}", calendar_update},
+    {"calendar_delete", "{\"type\":\"function\",\"name\":\"calendar_delete\",\"description\":\"Delete one Google Calendar event. send_updates controls attendee notifications.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"send_updates\":{\"type\":\"string\",\"enum\":[\"none\",\"all\",\"externalOnly\"]}},\"required\":[\"id\",\"send_updates\"],\"additionalProperties\":false}}", calendar_delete},
 #endif
 };
 
@@ -124,16 +141,23 @@ static tool_mode_t tool_mode(const tool_t *tool)
 {
     const mp_config_t *config = mp_config_get();
 #if CONFIG_MICROPAW_GMAIL
-    if (tool->execute == email_send) {
+    if (tool->execute == email_send || tool->execute == email_modify ||
+        tool->execute == email_trash || tool->execute == email_untrash) {
         return permission_mode(config->email_permission);
     }
-    if (tool->execute == email_schedule && strcmp(config->email_permission, "disabled") == 0) {
+    if ((tool->execute == email_schedule || tool->execute == email_search ||
+         tool->execute == email_get) && strcmp(config->email_permission, "disabled") == 0) {
         return TOOL_DISABLED;
     }
 #endif
 #if CONFIG_MICROPAW_CALENDAR
-    if (tool->execute == calendar_create) {
+    if (tool->execute == calendar_create || tool->execute == calendar_update ||
+        tool->execute == calendar_delete) {
         return permission_mode(config->calendar_permission);
+    }
+    if ((tool->execute == calendar_list || tool->execute == calendar_get) &&
+        strcmp(config->calendar_permission, "disabled") == 0) {
+        return TOOL_DISABLED;
     }
 #endif
     return TOOL_ALLOWED;
@@ -309,6 +333,47 @@ static esp_err_t email_schedule(const char *arguments, const mp_tool_context_t *
     }
     return error;
 }
+
+static esp_err_t email_search(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    uint32_t page_size;
+    if (!json_string(arguments, "query", s_arg2, sizeof(s_arg2)) ||
+        !json_string(arguments, "page_token", s_arg3, sizeof(s_arg3)) ||
+        !json_uint(arguments, "page_size", &page_size)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return mp_email_service()->search(s_arg2, s_arg3, page_size, output, size);
+}
+
+static esp_err_t email_get(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    return json_string(arguments, "id", s_arg3, sizeof(s_arg3)) ?
+           mp_email_service()->get(s_arg3, output, size) : ESP_ERR_INVALID_ARG;
+}
+
+static esp_err_t email_modify(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    return json_string(arguments, "id", s_arg3, sizeof(s_arg3)) &&
+           json_string(arguments, "action", s_arg4, sizeof(s_arg4)) ?
+           mp_email_service()->modify(s_arg3, s_arg4, output, size) : ESP_ERR_INVALID_ARG;
+}
+
+static esp_err_t email_trash(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    return json_string(arguments, "id", s_arg3, sizeof(s_arg3)) ?
+           mp_email_service()->trash(s_arg3, output, size) : ESP_ERR_INVALID_ARG;
+}
+
+static esp_err_t email_untrash(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    return json_string(arguments, "id", s_arg3, sizeof(s_arg3)) ?
+           mp_email_service()->untrash(s_arg3, output, size) : ESP_ERR_INVALID_ARG;
+}
 #endif
 
 #if CONFIG_MICROPAW_CALENDAR
@@ -326,6 +391,53 @@ static esp_err_t calendar_create(const char *arguments, const mp_tool_context_t 
         .end_rfc3339 = s_arg4
     };
     return mp_calendar_service()->create(&event, output, size);
+}
+
+static esp_err_t calendar_list(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    uint32_t page_size;
+    if (!json_string(arguments, "query", s_arg2, sizeof(s_arg2)) ||
+        !json_string(arguments, "page_token", s_arg3, sizeof(s_arg3)) ||
+        !json_string(arguments, "time_min_rfc3339", s_arg4, sizeof(s_arg4)) ||
+        !json_string(arguments, "time_max_rfc3339", s_arg5, sizeof(s_arg5)) ||
+        !json_uint(arguments, "page_size", &page_size)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return mp_calendar_service()->list(s_arg2, s_arg4, s_arg5, s_arg3,
+                                       page_size, output, size);
+}
+
+static esp_err_t calendar_get(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    return json_string(arguments, "id", s_arg3, sizeof(s_arg3)) ?
+           mp_calendar_service()->get(s_arg3, output, size) : ESP_ERR_INVALID_ARG;
+}
+
+static esp_err_t calendar_update(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    if (!json_string(arguments, "id", s_arg3, sizeof(s_arg3)) ||
+        !json_string(arguments, "summary", s_arg2, sizeof(s_arg2)) ||
+        !json_string(arguments, "start_rfc3339", s_arg4, sizeof(s_arg4)) ||
+        !json_string(arguments, "end_rfc3339", s_arg5, sizeof(s_arg5))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    mp_calendar_event_t event = {
+        .summary = s_arg2,
+        .start_rfc3339 = s_arg4,
+        .end_rfc3339 = s_arg5
+    };
+    return mp_calendar_service()->update(s_arg3, &event, output, size);
+}
+
+static esp_err_t calendar_delete(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    return json_string(arguments, "id", s_arg3, sizeof(s_arg3)) &&
+           json_string(arguments, "send_updates", s_arg4, sizeof(s_arg4)) ?
+           mp_calendar_service()->remove(s_arg3, s_arg4, output, size) : ESP_ERR_INVALID_ARG;
 }
 #endif
 

@@ -25,6 +25,9 @@ bool mp_json_get_string(const char *json, size_t length, const char *key,
                         char *output, size_t size);
 bool mp_json_get_int64(const char *json, size_t length, const char *key, int64_t *value);
 bool mp_json_get_bool(const char *json, size_t length, const char *key, bool *value);
+bool mp_json_decode_string(const char *value, size_t length, char *output, size_t size);
+bool mp_json_next(const char *array, size_t length, size_t *offset,
+                  const char **value, size_t *value_length);
 bool mp_json_first(const char *array, size_t length, const char **value, size_t *value_length);
 
 static const char *skip_space(const char *cursor, const char *end)
@@ -380,15 +383,32 @@ bool mp_json_get_bool(const char *json, size_t length, const char *key, bool *va
     return false;
 }
 
-bool mp_json_first(const char *array, size_t length, const char **value, size_t *value_length)
+bool mp_json_decode_string(const char *value, size_t length, char *output, size_t size)
 {
-    if (!array || !value || !value_length) {
+    if (!value || !output || size == 0) {
+        return false;
+    }
+    return decode_string(value, length, output, size);
+}
+
+bool mp_json_next(const char *array, size_t length, size_t *offset,
+                  const char **value, size_t *value_length)
+{
+    if (!array || !offset || !value || !value_length || *offset > length) {
         return false;
     }
     const char *end = array + length;
-    const char *cursor = skip_space(array, end);
-    if (cursor >= end || *cursor++ != '[') {
-        return false;
+    const char *cursor = array + *offset;
+    if (*offset == 0) {
+        cursor = skip_space(cursor, end);
+        if (cursor >= end || *cursor++ != '[') {
+            return false;
+        }
+    } else {
+        cursor = skip_space(cursor, end);
+        if (cursor < end && *cursor == ',') {
+            cursor++;
+        }
     }
     cursor = skip_space(cursor, end);
     if (cursor >= end || *cursor == ']') {
@@ -400,5 +420,12 @@ bool mp_json_first(const char *array, size_t length, const char **value, size_t 
     }
     *value = cursor;
     *value_length = item_end - cursor;
+    *offset = item_end - array;
     return true;
+}
+
+bool mp_json_first(const char *array, size_t length, const char **value, size_t *value_length)
+{
+    size_t offset = 0;
+    return mp_json_next(array, length, &offset, value, value_length);
 }
