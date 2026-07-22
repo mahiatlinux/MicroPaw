@@ -34,7 +34,6 @@ typedef struct {
     char location[512];
 } mp_http_response_t;
 
-esp_err_t mp_net_init(void);
 esp_err_t mp_http_stream(const mp_http_request_t *request, mp_http_chunk_fn callback,
                          void *context, mp_http_response_t *response);
 esp_err_t mp_http_collect(const mp_http_request_t *request, char *output, size_t size,

@@ -5,8 +5,6 @@
 #include <strings.h>
 
 #include "esp_crt_bundle.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 
 typedef struct {
     mp_http_response_t *response;
@@ -18,14 +16,10 @@ typedef struct {
     size_t used;
 } collect_context_t;
 
-static StaticSemaphore_t s_lock_buffer;
-static SemaphoreHandle_t s_lock;
-
 static esp_err_t http_event(esp_http_client_event_t *event);
 static bool collect_chunk(const uint8_t *data, size_t size, void *context);
 static bool content_type_allowed(const char *actual, const char *accepted);
 static esp_err_t write_body(esp_http_client_handle_t client, const char *body, size_t size);
-esp_err_t mp_net_init(void);
 esp_err_t mp_http_stream(const mp_http_request_t *request, mp_http_chunk_fn callback,
                          void *context, mp_http_response_t *response);
 esp_err_t mp_http_collect(const mp_http_request_t *request, char *output, size_t size,
@@ -90,16 +84,10 @@ static esp_err_t write_body(esp_http_client_handle_t client, const char *body, s
     return ESP_OK;
 }
 
-esp_err_t mp_net_init(void)
-{
-    s_lock = xSemaphoreCreateMutexStatic(&s_lock_buffer);
-    return s_lock ? ESP_OK : ESP_ERR_NO_MEM;
-}
-
 esp_err_t mp_http_stream(const mp_http_request_t *request, mp_http_chunk_fn callback,
                          void *context, mp_http_response_t *response)
 {
-    if (!request || !request->url || !response || !mp_url_is_https(request->url) || !s_lock) {
+    if (!request || !request->url || !response || !mp_url_is_https(request->url)) {
         return ESP_ERR_INVALID_ARG;
     }
     memset(response, 0, sizeof(*response));
@@ -116,10 +104,8 @@ esp_err_t mp_http_stream(const mp_http_request_t *request, mp_http_chunk_fn call
         .buffer_size_tx = 1024,
         .crt_bundle_attach = esp_crt_bundle_attach
     };
-    xSemaphoreTake(s_lock, portMAX_DELAY);
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
-        xSemaphoreGive(s_lock);
         return ESP_ERR_NO_MEM;
     }
     for (size_t index = 0; index < request->header_count; index++) {
@@ -164,7 +150,6 @@ esp_err_t mp_http_stream(const mp_http_request_t *request, mp_http_chunk_fn call
     }
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
-    xSemaphoreGive(s_lock);
     return error;
 }
 

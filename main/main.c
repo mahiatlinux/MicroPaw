@@ -12,7 +12,6 @@
 #include "mp_config.h"
 #include "mp_memory.h"
 #include "mp_metrics.h"
-#include "mp_net.h"
 #include "mp_scheduler.h"
 #include "mp_telegram.h"
 #include "mp_tools.h"
@@ -156,7 +155,6 @@ static esp_err_t initialize(void)
     if ((error = setup_console()) != ESP_OK ||
         (error = mp_config_init()) != ESP_OK ||
         (error = mp_memory_init()) != ESP_OK ||
-        (error = mp_net_init()) != ESP_OK ||
         (error = mp_tools_init()) != ESP_OK ||
         (error = mp_agent_init(send_output)) != ESP_OK ||
         (error = mp_scheduler_init(schedule_output)) != ESP_OK ||

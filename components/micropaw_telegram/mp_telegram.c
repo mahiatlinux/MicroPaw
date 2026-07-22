@@ -15,7 +15,7 @@
 
 #include "freertos/semphr.h"
 
-EXT_RAM_BSS_ATTR static char s_response[6144];
+EXT_RAM_BSS_ATTR static char s_poll_response[6144];
 EXT_RAM_BSS_ATTR static char s_body[4608];
 EXT_RAM_BSS_ATTR static char s_part[3901];
 EXT_RAM_BSS_ATTR static char s_message[MP_MESSAGE_LEN];
@@ -61,21 +61,21 @@ static esp_err_t poll_once(void)
     mp_http_request_t request = {
         .url = url,
         .method = HTTP_METHOD_GET,
-        .response_limit = sizeof(s_response) - 1,
+        .response_limit = sizeof(s_poll_response) - 1,
         .timeout_ms = 20000,
         .accepted_content_types = "application/json"
     };
     mp_http_response_t response;
-    esp_err_t error = mp_http_collect(&request, s_response, sizeof(s_response), &response);
+    esp_err_t error = mp_http_collect(&request, s_poll_response, sizeof(s_poll_response), &response);
     if (error != ESP_OK || response.status != 200) {
         return error == ESP_OK ? ESP_ERR_INVALID_RESPONSE : error;
     }
     bool ok;
     const char *results;
     size_t results_length;
-    size_t response_length = strlen(s_response);
-    if (!mp_json_get_bool(s_response, response_length, "ok", &ok) || !ok ||
-        !mp_json_get_slice(s_response, response_length, "result", &results, &results_length)) {
+    size_t response_length = strlen(s_poll_response);
+    if (!mp_json_get_bool(s_poll_response, response_length, "ok", &ok) || !ok ||
+        !mp_json_get_slice(s_poll_response, response_length, "result", &results, &results_length)) {
         return ESP_ERR_INVALID_RESPONSE;
     }
     const char *update;
@@ -160,12 +160,12 @@ static esp_err_t send_chunk(const char *chat_id, const char *text, size_t length
         .header_count = 1,
         .body = s_body,
         .body_size = writer.length,
-        .response_limit = sizeof(s_response) - 1,
+        .response_limit = 512,
         .timeout_ms = 20000,
         .accepted_content_types = "application/json"
     };
     mp_http_response_t response;
-    esp_err_t error = mp_http_collect(&request, s_response, sizeof(s_response), &response);
+    esp_err_t error = mp_http_stream(&request, NULL, NULL, &response);
     return error == ESP_OK && response.status == 200 ? ESP_OK :
            error == ESP_OK ? ESP_ERR_INVALID_RESPONSE : error;
 }
