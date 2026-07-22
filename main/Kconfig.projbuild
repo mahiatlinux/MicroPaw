@@ -29,11 +29,11 @@ config MICROPAW_RSS
 
 config MICROPAW_GMAIL
     bool "Gmail send tool"
-    default n
+    default y
 
 config MICROPAW_CALENDAR
     bool "Google Calendar create tool"
-    default n
+    default y
 
 config MICROPAW_LLM_MODEL
     string "Default LLM model"

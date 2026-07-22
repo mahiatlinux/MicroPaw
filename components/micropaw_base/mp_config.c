@@ -33,9 +33,12 @@ static const config_field_t s_fields[] = {
     {"google_client_id", "google_id", offsetof(mp_config_t, google_client_id), sizeof(s_config.google_client_id), true},
     {"google_client_secret", "google_sec", offsetof(mp_config_t, google_client_secret), sizeof(s_config.google_client_secret), true},
     {"google_refresh_token", "google_ref", offsetof(mp_config_t, google_refresh_token), sizeof(s_config.google_refresh_token), true},
+    {"email_permission", "email_perm", offsetof(mp_config_t, email_permission), sizeof(s_config.email_permission), false},
+    {"calendar_permission", "calendar_perm", offsetof(mp_config_t, calendar_permission), sizeof(s_config.calendar_permission), false},
     {"timezone", "timezone", offsetof(mp_config_t, timezone), sizeof(s_config.timezone), false}
 };
 
+static void config_defaults(void);
 static size_t field_count(void);
 static char *field_value(mp_config_t *config, const config_field_t *field);
 static const char *const_field_value(const mp_config_t *config, const config_field_t *field);
@@ -51,6 +54,16 @@ esp_err_t mp_config_set(const char *key, const char *value);
 esp_err_t mp_config_import_toml(const char *text, size_t length, size_t *error_line);
 esp_err_t mp_config_erase(void);
 void mp_config_format(char *output, size_t size);
+
+static void config_defaults(void)
+{
+    memset(&s_config, 0, sizeof(s_config));
+    strlcpy(s_config.llm_provider, "openai", sizeof(s_config.llm_provider));
+    strlcpy(s_config.llm_model, CONFIG_MICROPAW_LLM_MODEL, sizeof(s_config.llm_model));
+    strlcpy(s_config.email_permission, "permission", sizeof(s_config.email_permission));
+    strlcpy(s_config.calendar_permission, "permission", sizeof(s_config.calendar_permission));
+    strlcpy(s_config.timezone, "UTC0", sizeof(s_config.timezone));
+}
 
 static size_t field_count(void)
 {
@@ -90,6 +103,11 @@ static bool valid_value(config_field_t field, const char *value)
     }
     if (strcmp(field.name, "llm_endpoint") == 0) {
         return !value[0] || strncmp(value, "https://", 8) == 0;
+    }
+    if (strcmp(field.name, "email_permission") == 0 ||
+        strcmp(field.name, "calendar_permission") == 0) {
+        return strcmp(value, "allowed") == 0 || strcmp(value, "permission") == 0 ||
+               strcmp(value, "disabled") == 0;
     }
     return true;
 }
@@ -222,10 +240,7 @@ esp_err_t mp_config_init(void)
     if (error != ESP_OK) {
         return error;
     }
-    memset(&s_config, 0, sizeof(s_config));
-    strlcpy(s_config.llm_provider, "openai", sizeof(s_config.llm_provider));
-    strlcpy(s_config.llm_model, CONFIG_MICROPAW_LLM_MODEL, sizeof(s_config.llm_model));
-    strlcpy(s_config.timezone, "UTC0", sizeof(s_config.timezone));
+    config_defaults();
     error = nvs_open("mp_config", NVS_READONLY, &handle);
     if (error == ESP_ERR_NVS_NOT_FOUND) {
         return ESP_OK;
@@ -319,10 +334,7 @@ esp_err_t mp_config_erase(void)
     }
     nvs_close(handle);
     if (error == ESP_OK) {
-        memset(&s_config, 0, sizeof(s_config));
-        strlcpy(s_config.llm_provider, "openai", sizeof(s_config.llm_provider));
-        strlcpy(s_config.llm_model, CONFIG_MICROPAW_LLM_MODEL, sizeof(s_config.llm_model));
-        strlcpy(s_config.timezone, "UTC0", sizeof(s_config.timezone));
+        config_defaults();
     }
     return error;
 }

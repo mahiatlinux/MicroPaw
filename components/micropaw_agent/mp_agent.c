@@ -1,7 +1,6 @@
 #include "mp_agent.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "esp_attr.h"
@@ -150,7 +149,7 @@ static bool handle_command(const mp_message_t *message)
     }
     if (sscanf(message->text, "/cancel %lu", &parsed) == 1 && parsed <= UINT32_MAX) {
         esp_err_t error = mp_confirmation_cancel(message->chat_id, (uint32_t)parsed);
-        send_reply(message->chat_id, error == ESP_OK ? "Confirmation cancelled." : "Confirmation not found or expired.");
+        send_reply(message->chat_id, error == ESP_OK ? "Permission cancelled." : "Permission not found or expired.");
         return true;
     }
     return false;
@@ -275,7 +274,7 @@ static void execute_confirmation(const mp_message_t *message, uint32_t id)
     esp_err_t error = mp_confirmation_take(message->chat_id, id, tool, sizeof(tool),
                                             arguments, sizeof(arguments));
     if (error != ESP_OK) {
-        send_reply(message->chat_id, "Confirmation not found or expired.");
+        send_reply(message->chat_id, "Permission not found or expired.");
         return;
     }
     mp_tool_context_t context = {0};

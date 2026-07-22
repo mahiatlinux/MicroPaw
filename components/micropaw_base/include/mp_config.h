@@ -19,6 +19,8 @@ typedef struct {
     char google_client_id[128];
     char google_client_secret[96];
     char google_refresh_token[256];
+    char email_permission[11];
+    char calendar_permission[11];
     char timezone[64];
 } mp_config_t;
 

@@ -4,7 +4,6 @@
 #include <stdint.h>
 
 #include "esp_err.h"
-#include "mp_types.h"
 
 esp_err_t mp_confirmation_request(const char *chat_id, const char *tool, const char *arguments,
                                   uint32_t *id);
