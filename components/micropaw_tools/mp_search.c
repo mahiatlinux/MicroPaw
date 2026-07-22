@@ -40,6 +40,8 @@ static void decode_url(const char *source, size_t length, char *output, size_t s
 static void extract_url(const char *tag, char *output, size_t size);
 static void process_tag(ddg_parser_t *parser);
 static bool ddg_chunk(const uint8_t *data, size_t size, void *context);
+static esp_err_t ddg_request(const char *url, const char *body, size_t body_size,
+                             mp_search_result_t *results, size_t *count);
 static esp_err_t ddg_search(const char *query, mp_search_result_t *results, size_t *count);
 const mp_search_provider_t *mp_search_provider(const char *name);
 esp_err_t mp_search_run(const char *provider, const char *query, char *output, size_t size);
@@ -120,7 +122,7 @@ static void process_tag(ddg_parser_t *parser)
 {
     parser->tag[parser->tag_length] = 0;
     if (parser->tag[0] == 'a' && isspace((unsigned char)parser->tag[1]) &&
-        strstr(parser->tag, "result-link")) {
+        (strstr(parser->tag, "result-link") || strstr(parser->tag, "result__a"))) {
         memset(&parser->current, 0, sizeof(parser->current));
         extract_url(parser->tag, parser->current.url, sizeof(parser->current.url));
         mp_html_text_init(&parser->title, parser->current.title, sizeof(parser->current.title));
@@ -128,11 +130,14 @@ static void process_tag(ddg_parser_t *parser)
     } else if (strcmp(parser->tag, "/a") == 0 && parser->capture == CAPTURE_TITLE) {
         mp_html_text_finish(&parser->title);
         parser->capture = CAPTURE_NONE;
-    } else if (parser->tag[0] == 't' && parser->tag[1] == 'd' &&
-               strstr(parser->tag, "result-snippet")) {
+    } else if ((parser->tag[0] == 't' && parser->tag[1] == 'd' &&
+                strstr(parser->tag, "result-snippet")) ||
+               (parser->tag[0] == 'a' && isspace((unsigned char)parser->tag[1]) &&
+                strstr(parser->tag, "result__snippet"))) {
         mp_html_text_init(&parser->snippet, parser->current.snippet, sizeof(parser->current.snippet));
         parser->capture = CAPTURE_SNIPPET;
-    } else if (strcmp(parser->tag, "/td") == 0 && parser->capture == CAPTURE_SNIPPET) {
+    } else if ((strcmp(parser->tag, "/td") == 0 || strcmp(parser->tag, "/a") == 0) &&
+               parser->capture == CAPTURE_SNIPPET) {
         mp_html_text_finish(&parser->snippet);
         parser->capture = CAPTURE_NONE;
         if (parser->current.title[0] && parser->current.url[0] && parser->count < MP_SEARCH_MAX_RESULTS) {
@@ -169,27 +174,21 @@ static bool ddg_chunk(const uint8_t *data, size_t size, void *context)
     return true;
 }
 
-static esp_err_t ddg_search(const char *query, mp_search_result_t *results, size_t *count)
+static esp_err_t ddg_request(const char *url, const char *body, size_t body_size,
+                             mp_search_result_t *results, size_t *count)
 {
-    char encoded[768];
-    char body[770];
-    mp_url_encode(query, encoded, sizeof(encoded));
-    int body_length = snprintf(body, sizeof(body), "q=%s", encoded);
-    if (body_length < 0 || (size_t)body_length >= sizeof(body)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
     mp_http_header_t headers[] = {
         {"Accept", "text/html"},
         {"User-Agent", "MicroPaw/0.1 ESP32"},
         {"Content-Type", "application/x-www-form-urlencoded"}
     };
     mp_http_request_t request = {
-        .url = "https://lite.duckduckgo.com/lite/",
+        .url = url,
         .method = HTTP_METHOD_POST,
         .headers = headers,
         .header_count = sizeof(headers) / sizeof(headers[0]),
         .body = body,
-        .body_size = body_length,
+        .body_size = body_size,
         .response_limit = CONFIG_MICROPAW_SEARCH_DOWNLOAD_LIMIT,
         .timeout_ms = 20000,
         .accepted_content_types = "text/html,application/xhtml+xml"
@@ -205,6 +204,24 @@ static esp_err_t ddg_search(const char *query, mp_search_result_t *results, size
     }
     *count = parser.count;
     return parser.count ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+static esp_err_t ddg_search(const char *query, mp_search_result_t *results, size_t *count)
+{
+    char encoded[768];
+    char body[770];
+    mp_url_encode(query, encoded, sizeof(encoded));
+    int body_length = snprintf(body, sizeof(body), "q=%s", encoded);
+    if (body_length < 0 || (size_t)body_length >= sizeof(body)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    esp_err_t error = ddg_request("https://lite.duckduckgo.com/lite/", body,
+                                  (size_t)body_length, results, count);
+    if (error == ESP_ERR_INVALID_RESPONSE || error == ESP_ERR_NOT_FOUND) {
+        error = ddg_request("https://html.duckduckgo.com/html/", body,
+                            (size_t)body_length, results, count);
+    }
+    return error;
 }
 
 const mp_search_provider_t *mp_search_provider(const char *name)
