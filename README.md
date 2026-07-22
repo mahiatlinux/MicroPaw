@@ -46,6 +46,8 @@ The agent can run 12 sequential tool calls per turn. Kconfig can lower the limit
 
 OpenAI, OpenRouter and custom Responses-compatible HTTPS endpoints use the same streamed agent path. The default build allows 32,768 output tokens and 128 KB of reply or immediate-email text. Both values are configurable in Kconfig. Gmail uploads are base64url encoded while they are sent, so encoded and JSON copies are not kept in RAM. Scheduled emails are smaller because they must fit persistent NVS job storage.
 
+Persistent memory holds eight durable entries of up to 1,023 bytes each. Separate facts should use separate entries.
+
 Google OAuth needs these scopes in one offline grant:
 
 ```text

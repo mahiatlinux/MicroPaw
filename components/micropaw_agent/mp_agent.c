@@ -22,9 +22,11 @@ extern const char scheduled_txt[] asm("_binary_scheduled_txt_start");
 #define AGENT_QUEUE_LENGTH 4
 #define AGENT_REQUEST_LEN (CONFIG_MICROPAW_WORK_TEXT_BYTES * 6 + 65536)
 #define AGENT_TRACE_LEN (CONFIG_MICROPAW_WORK_TEXT_BYTES * 4 + 32768)
+#define AGENT_INSTRUCTIONS_LEN (MP_MEMORY_SLOTS * (MP_MEMORY_TEXT_LEN + 3) + 4096)
 
 EXT_RAM_BSS_ATTR static char s_request[AGENT_REQUEST_LEN];
-EXT_RAM_BSS_ATTR static char s_instructions[8192];
+EXT_RAM_BSS_ATTR static char s_instructions[AGENT_INSTRUCTIONS_LEN];
+EXT_RAM_BSS_ATTR static char s_memory_context[MP_MEMORY_SLOTS * (MP_MEMORY_TEXT_LEN + 3)];
 EXT_RAM_BSS_ATTR static char s_tools[8192];
 EXT_RAM_BSS_ATTR static char s_tool_trace[AGENT_TRACE_LEN];
 EXT_RAM_BSS_ATTR static char s_tool_output[MP_TOOL_RESULT_LEN];
@@ -194,8 +196,7 @@ static bool handle_command(const mp_message_t *message)
 
 static bool build_instructions(bool proactive)
 {
-    char memory[MP_MEMORY_SLOTS * (MP_MEMORY_TEXT_LEN + 3)];
-    mp_memory_format(memory, sizeof(memory));
+    mp_memory_format(s_memory_context, sizeof(s_memory_context));
     mp_writer_t writer;
     mp_writer_init(&writer, s_instructions, sizeof(s_instructions));
     mp_writer_raw(&writer, system_txt);
@@ -203,9 +204,9 @@ static bool build_instructions(bool proactive)
         mp_writer_char(&writer, '\n');
         mp_writer_raw(&writer, scheduled_txt);
     }
-    if (memory[0]) {
+    if (s_memory_context[0]) {
         mp_writer_raw(&writer, "\nSaved memory:\n");
-        mp_writer_raw(&writer, memory);
+        mp_writer_raw(&writer, s_memory_context);
     }
     return writer.valid;
 }

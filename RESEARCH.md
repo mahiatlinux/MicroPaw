@@ -47,6 +47,7 @@ No source code is copied from these projects. MicroPaw uses independently writte
 - Stream Gmail base64url encoding into the HTTPS request. Keep only the decoded body, RFC header and a 2 KB encoding block instead of full raw, encoded and JSON payload copies.
 - Use one HTTPS transport with bounded buffers. Tool execution is serial and no operation holds a nested network connection. Telegram long polling may overlap one foreground request so a poll cannot add up to 15 seconds of response latency.
 - Store compact memory records, recent conversation state and fixed scheduler records as NVS blobs. Avoid a filesystem and repeated Markdown parsing.
+- Store eight durable memory entries of up to 1,023 bytes. Keep the 8 KB store and formatted prompt context in PSRAM, persist the store as one versioned NVS blob, and reject oversized notes with an explicit tool error.
 - Implement DuckDuckGo Lite as the first provider behind a small interface. Retry once through DuckDuckGo HTML when Lite returns an invalid response or no results. Parse both incrementally with one state machine and no DOM, cJSON or full-response buffer. Add optional Wikipedia, arXiv and RSS or Atom readers backed by their documented formats. Do not claim DuckDuckGo reliability until repeated connected-board tests pass.
 - ESP-IDF 6.0 no longer includes its earlier `json` component. Use one bounded JSON slice parser for LLM events, Telegram, OAuth responses and tool arguments instead of adding cJSON as an external dependency.
 - Require owner-chat authorization. Give email and Calendar independent `allowed`, `permission` and `disabled` modes stored in local configuration. Treat fetched web text as untrusted data and never as instructions.
@@ -61,10 +62,10 @@ All three projects were built locally on 2026-07-21 for ESP32-S3 with 16 MB flas
 
 | Project | Source revision | ESP-IDF | Image bytes | Padded binary | Static DIRAM | External BSS |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| MicroPaw | 2026-07-22 build | 6.0.2 | 885,456 | 885,568 | 130,032 | 3,159,500 |
+| MicroPaw | 2026-07-22 build | 6.0.2 | 885,644 | 885,760 | 128,448 | 3,180,068 |
 | zclaw | `e3ad271244c1f2e01f4df6e81c2bab346e95d1b1` | 5.4 | 847,950 | 848,064 | 173,731 | 0 reported |
 | MimiClaw | `bb10ea0149080d506d920c09054f4c5b20409de2` | 5.5.2 | 1,180,553 | 1,180,672 | 135,783 | 0 reported |
 
-MicroPaw is 37,506 image bytes larger than the comparable zclaw build and uses 43,699 fewer static DIRAM bytes. It includes direct search, bounded page fetch, Wikipedia, arXiv and RSS or Atom support that zclaw lacks. MicroPaw is 295,097 image bytes smaller than MimiClaw and uses 5,751 fewer static DIRAM bytes. Its fixed external BSS holds the larger bounded request, stream, tool and channel work areas in PSRAM. Competitor firmware was not flashed, so no competitor runtime heap or stack numbers are presented as measured.
+MicroPaw is 37,694 image bytes larger than the comparable zclaw build and uses 45,283 fewer static DIRAM bytes. It includes direct search, bounded page fetch, Wikipedia, arXiv and RSS or Atom support that zclaw lacks. MicroPaw is 294,909 image bytes smaller than MimiClaw and uses 7,335 fewer static DIRAM bytes. Its fixed external BSS holds the larger bounded request, stream, tool and channel work areas in PSRAM. Competitor firmware was not flashed, so no competitor runtime heap or stack numbers are presented as measured.
 
 zclaw separately publishes 853,034 image bytes and about 149 KB DRAM used for its default classic ESP32 build. That repository figure is not mixed into the ESP32-S3 table.
