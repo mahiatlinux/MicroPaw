@@ -1,4 +1,8 @@
-# MicroPaw
+<p align="center">
+  <img src="assets/micropaw-logo.png" alt="MicroPaw logo" width="420">
+</p>
+
+<h1 align="center">MicroPaw</h1>
 
 MicroPaw keeps its agent loop, tools, memory, schedules, confirmations and channel routing on an ESP32. Remote services supply inference and requested data. They do not own the assistant state.
 
