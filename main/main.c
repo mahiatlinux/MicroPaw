@@ -140,12 +140,15 @@ static void cli_line(char *line)
         char output[768];
         mp_metrics_format(output, sizeof(output));
         printf("%s", output);
+    } else if (strcmp(line, "forget-telegram") == 0) {
+        const char *chat_id = mp_config_get()->owner_chat_id;
+        printf("%s\n", chat_id[0] ? esp_err_to_name(mp_history_clear(chat_id)) : "owner_chat_id is unset");
     } else if (strncmp(line, "submit ", 7) == 0) {
         printf("%s\n", esp_err_to_name(mp_agent_submit("serial", line + 7, false, pdMS_TO_TICKS(100))));
     } else if (strcmp(line, "reboot") == 0) {
         esp_restart();
     } else if (line[0]) {
-        printf("commands: config, set KEY VALUE, push-config BYTES, erase-config YES, metrics, submit TEXT, reboot\n");
+        printf("commands: config, set KEY VALUE, push-config BYTES, erase-config YES, metrics, forget-telegram, submit TEXT, reboot\n");
     }
 }
 

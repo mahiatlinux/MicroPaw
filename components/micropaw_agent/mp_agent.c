@@ -68,6 +68,20 @@ static void process_message(const mp_message_t *message)
     if (handle_command(message)) {
         return;
     }
+    if (message->proactive) {
+        mp_tool_context_t context = {0};
+        strlcpy(context.chat_id, message->chat_id, sizeof(context.chat_id));
+        s_tool_output[0] = 0;
+        esp_err_t error = mp_tools_execute_scheduled(message->text, &context,
+                                                     s_tool_output, sizeof(s_tool_output));
+        if (error != ESP_ERR_NOT_FOUND) {
+            if (error != ESP_OK && !s_tool_output[0]) {
+                snprintf(s_tool_output, sizeof(s_tool_output), "Tool error: %s", esp_err_to_name(error));
+            }
+            send_reply(message->chat_id, s_tool_output);
+            return;
+        }
+    }
     if (!mp_llm_ready()) {
         send_reply(message->chat_id, "The LLM provider is not configured. Check llm_provider, llm_model, llm_api_key and llm_endpoint.");
         return;
@@ -100,9 +114,10 @@ static void process_message(const mp_message_t *message)
         s_state = MP_AGENT_TOOL;
         mp_tool_context_t context = {0};
         strlcpy(context.chat_id, message->chat_id, sizeof(context.chat_id));
+        s_tool_output[0] = 0;
         error = mp_tools_execute(s_result.tool, s_result.arguments, &context, false,
                                  s_tool_output, sizeof(s_tool_output));
-        if (error != ESP_OK) {
+        if (error != ESP_OK && !s_tool_output[0]) {
             snprintf(s_tool_output, sizeof(s_tool_output), "Tool error: %s", esp_err_to_name(error));
         }
         if (!append_tool_exchange(&s_result, s_tool_output) || !build_request(message)) {
@@ -179,6 +194,10 @@ static bool build_request(const mp_message_t *message)
     mp_writer_init(&writer, s_request, sizeof(s_request));
     mp_writer_raw(&writer, "{\"model\":");
     mp_writer_string(&writer, config->llm_model);
+    if (strcmp(config->llm_model, "gpt-5.6-luna") == 0 ||
+        strcmp(config->llm_model, "openai/gpt-5.6-luna") == 0) {
+        mp_writer_raw(&writer, ",\"reasoning\":{\"effort\":\"none\"}");
+    }
     mp_writer_raw(&writer, ",\"instructions\":");
     mp_writer_string(&writer, s_instructions);
     mp_writer_raw(&writer, ",\"input\":[");
@@ -277,8 +296,9 @@ static void execute_confirmation(const mp_message_t *message, uint32_t id)
     }
     mp_tool_context_t context = {0};
     strlcpy(context.chat_id, message->chat_id, sizeof(context.chat_id));
+    s_tool_output[0] = 0;
     error = mp_tools_execute(tool, arguments, &context, true, s_tool_output, sizeof(s_tool_output));
-    send_reply(message->chat_id, error == ESP_OK ? s_tool_output : esp_err_to_name(error));
+    send_reply(message->chat_id, error == ESP_OK || s_tool_output[0] ? s_tool_output : esp_err_to_name(error));
 }
 
 esp_err_t mp_agent_init(mp_send_fn send)

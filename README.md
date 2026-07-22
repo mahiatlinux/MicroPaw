@@ -81,7 +81,7 @@ set timezone NZST-12NZDT,M9.5.0,M4.1.0/3
 reboot
 ```
 
-`config` reports which secrets are set without printing their values. `push-config BYTES` is the bounded serial protocol used by the push script. `erase-config YES` removes every stored configuration value. `metrics` prints heap minima, largest blocks and active-task stack watermarks. `submit TEXT` sends a local test request to the agent queue. LLM provider and permission changes apply to the next request. Reboot after changing Wi-Fi, Telegram or timezone values.
+`config` reports which secrets are set without printing their values. `push-config BYTES` is the bounded serial protocol used by the push script. `erase-config YES` removes every stored configuration value. `metrics` prints heap minima, largest blocks and active-task stack watermarks. `forget-telegram` clears the configured owner chat history on the ESP. `submit TEXT` sends a local test request to the agent queue. LLM provider and permission changes apply to the next request. Reboot after changing Wi-Fi, Telegram or timezone values.
 
 ## LLM providers
 
@@ -149,7 +149,7 @@ The device refreshes the access token directly at Google. Gmail uses `users.mess
 
 Telegram commands are `/help`, `/metrics`, `/memory`, `/jobs`, `/forget`, `/confirm ID` and `/cancel ID`.
 
-The model can call `memory_save`, `memory_list`, `schedule_add`, `schedule_list`, `schedule_delete`, `time_now`, `diagnostics`, `web_search`, `web_fetch` and `rss_read`. `email_send` and `calendar_create` appear unless their permission is `disabled`.
+The model can call `memory_save`, `memory_list`, `schedule_add`, `schedule_list`, `schedule_delete`, `time_now`, `diagnostics`, `web_search`, `web_fetch` and `rss_read`. `email_send`, `email_schedule` and `calendar_create` appear unless their permission is `disabled`. Scheduled email stores the exact Gmail action and checks the current email permission when it is due.
 
 Search returns at most five titles, URLs and snippets. `web_fetch` accepts only a URL from the latest result set, follows at most one public HTTPS redirect, checks content type, stops at the configured byte limit and returns bounded visible text.
 
@@ -167,4 +167,4 @@ Run `scripts/report.ps1 -Port COM3` from an exported ESP-IDF shell. It writes bu
 
 ## Current test limits
 
-Build, flash, PSRAM startup, NVS defaults, scheduler startup and the original serial commands have been tested on the connected board. The TOML push and permission modes are not yet hardware-tested. Wi-Fi, Telegram, OpenAI, OpenRouter, custom inference, DuckDuckGo, specialised searches, page fetching and Google writes have not been exercised on-board because no user credentials or network configuration were provisioned. The measured build predates Gmail and Calendar being enabled by default.
+Build, flash, PSRAM startup, TOML push, Wi-Fi, Telegram and OpenRouter have been tested on the connected board. The scheduled Gmail path and Google Calendar writes still need live validation. OpenAI, custom inference, searches, page fetching and permission mode have not been tested on-board.

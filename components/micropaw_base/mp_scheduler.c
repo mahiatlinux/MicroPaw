@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -11,7 +12,7 @@
 #include "nvs.h"
 #include "sdkconfig.h"
 
-#define SCHEDULE_MAGIC 0x4d505331U
+#define SCHEDULE_MAGIC 0x4d505332U
 
 typedef struct {
     uint32_t id;
@@ -28,7 +29,7 @@ typedef struct {
     schedule_record_t records[MP_SCHEDULE_SLOTS];
 } schedule_store_t;
 
-static schedule_store_t s_store;
+EXT_RAM_BSS_ATTR static schedule_store_t s_store;
 static StaticSemaphore_t s_lock_buffer;
 static SemaphoreHandle_t s_lock;
 static StaticTask_t s_task_buffer;
@@ -96,19 +97,21 @@ static void scheduler_task(void *argument)
 
 static void scheduler_check(void)
 {
-    schedule_record_t due[MP_SCHEDULE_SLOTS];
-    size_t count = 0;
     int64_t now = (int64_t)time(NULL);
     if (now < 1700000000) {
         return;
     }
+    bool changed = false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     for (int index = 0; index < MP_SCHEDULE_SLOTS; index++) {
         schedule_record_t *record = &s_store.records[index];
         if (!record->active || record->next_epoch > now) {
             continue;
         }
-        due[count++] = *record;
+        if (s_emit(record->chat_id, record->text) != ESP_OK) {
+            continue;
+        }
+        changed = true;
         if (record->repeat_seconds) {
             do {
                 record->next_epoch += record->repeat_seconds;
@@ -117,13 +120,10 @@ static void scheduler_check(void)
             record->active = false;
         }
     }
-    if (count) {
+    if (changed) {
         save_store();
     }
     xSemaphoreGive(s_lock);
-    for (size_t index = 0; index < count; index++) {
-        s_emit(due[index].chat_id, due[index].text);
-    }
 }
 
 esp_err_t mp_scheduler_init(mp_schedule_emit_fn emit)
