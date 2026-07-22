@@ -5,6 +5,8 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "mp_config.h"
+#include "mp_types.h"
 
 typedef struct {
     const char *name;
@@ -34,7 +36,8 @@ void mp_metrics_format(char *output, size_t size)
     int used = snprintf(output, size,
                         "heap_free=%lu heap_min=%lu heap_largest=%lu\n"
                         "internal_free=%lu internal_min=%lu internal_largest=%lu\n"
-                        "psram_free=%lu psram_min=%lu psram_largest=%lu\n",
+                        "psram_free=%lu psram_min=%lu psram_largest=%lu\n"
+                        "text_capacity=%u tool_args_capacity=%u tool_result_capacity=%u llm_output_tokens=%s\n",
                         (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
                         (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
                         (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
@@ -43,7 +46,10 @@ void mp_metrics_format(char *output, size_t size)
                         (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                         (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
                         (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
-                        (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                        (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+                        (unsigned)MP_REPLY_LEN, (unsigned)MP_TOOL_ARGS_LEN,
+                        (unsigned)MP_TOOL_RESULT_LEN,
+                        mp_config_get()->llm_max_output_tokens);
     if (used < 0 || (size_t)used >= size) {
         output[size - 1] = 0;
         return;

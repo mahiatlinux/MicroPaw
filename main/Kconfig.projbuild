@@ -42,12 +42,22 @@ config MICROPAW_LLM_MODEL
 config MICROPAW_MAX_TOOL_ROUNDS
     int "Maximum tool calls per turn"
     range 1 12
-    default 8
+    default 12
+
+config MICROPAW_WORK_TEXT_BYTES
+    int "Large text capacity in PSRAM"
+    range 32768 262144
+    default 131072
+
+config MICROPAW_LLM_MAX_OUTPUT_TOKENS
+    int "Maximum inference output tokens"
+    range 1024 65536
+    default 32768
 
 config MICROPAW_LLM_STREAM_LIMIT
     int "Inference stream byte limit"
-    range 32768 262144
-    default 131072
+    range 131072 16777216
+    default 4194304
 
 config MICROPAW_AGENT_STACK
     int "Agent task stack bytes"
@@ -76,7 +86,7 @@ config MICROPAW_SEARCH_DOWNLOAD_LIMIT
 
 config MICROPAW_PAGE_DOWNLOAD_LIMIT
     int "Fetched page byte limit"
-    range 8192 131072
-    default 32768
+    range 8192 524288
+    default 131072
 
 endmenu

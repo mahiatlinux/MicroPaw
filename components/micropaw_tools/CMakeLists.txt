@@ -2,5 +2,5 @@ set(tool_sources "mp_tools.c" "mp_html.c" "mp_search.c" "mp_wikipedia.c" "mp_fee
 idf_component_register(
     SRCS ${tool_sources}
     INCLUDE_DIRS "include"
-    REQUIRES micropaw_base micropaw_net mbedtls
+    REQUIRES micropaw_base micropaw_net
 )

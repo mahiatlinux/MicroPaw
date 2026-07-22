@@ -16,6 +16,7 @@ typedef struct {
     char llm_api_key[256];
     char llm_model[96];
     char llm_endpoint[256];
+    char llm_max_output_tokens[6];
     char google_client_id[128];
     char google_client_secret[96];
     char google_refresh_token[256];

@@ -43,7 +43,7 @@ typedef enum {
     TOOL_DISABLED
 } tool_mode_t;
 
-EXT_RAM_BSS_ATTR static char s_arg1[4096];
+EXT_RAM_BSS_ATTR static char s_arg1[CONFIG_MICROPAW_WORK_TEXT_BYTES];
 #if CONFIG_MICROPAW_GMAIL || CONFIG_MICROPAW_CALENDAR
 EXT_RAM_BSS_ATTR static char s_arg2[512];
 #endif
@@ -101,8 +101,8 @@ static const tool_t s_tools[] = {
     {"rss_read", "{\"type\":\"function\",\"name\":\"rss_read\",\"description\":\"Read the first five items from a public HTTPS RSS or Atom feed.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"required\":[\"url\"],\"additionalProperties\":false}}", rss_read},
 #endif
 #if CONFIG_MICROPAW_GMAIL
-    {"email_send", "{\"type\":\"function\",\"name\":\"email_send\",\"description\":\"Send a plain-text email through Gmail. Recipient, subject and body limits are 255, 511 and 4095 bytes.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"to\",\"subject\",\"body\"],\"additionalProperties\":false}}", email_send},
-    {"email_schedule", "{\"type\":\"function\",\"name\":\"email_schedule\",\"description\":\"Schedule an exact plain-text Gmail email. Use this instead of schedule_add for delayed email. The current email permission is checked when it is due.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"}},\"required\":[\"to\",\"subject\",\"body\",\"delay_seconds\"],\"additionalProperties\":false}}", email_schedule},
+    {"email_send", "{\"type\":\"function\",\"name\":\"email_send\",\"description\":\"Send a plain-text email through Gmail. The body uses the configured PSRAM work-text capacity.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"to\",\"subject\",\"body\"],\"additionalProperties\":false}}", email_send},
+    {"email_schedule", "{\"type\":\"function\",\"name\":\"email_schedule\",\"description\":\"Schedule an exact plain-text Gmail email. Persistent scheduled messages are smaller than immediate emails. Use this instead of schedule_add for delayed email. The current email permission is checked when it is due.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"}},\"required\":[\"to\",\"subject\",\"body\",\"delay_seconds\"],\"additionalProperties\":false}}", email_schedule},
 #endif
 #if CONFIG_MICROPAW_CALENDAR
     {"calendar_create", "{\"type\":\"function\",\"name\":\"calendar_create\",\"description\":\"Create a Google Calendar event. Call time_now before resolving relative or partial dates. Never guess a missing month or year.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"start_rfc3339\":{\"type\":\"string\"},\"end_rfc3339\":{\"type\":\"string\"}},\"required\":[\"summary\",\"start_rfc3339\",\"end_rfc3339\"],\"additionalProperties\":false}}", calendar_create},
@@ -262,7 +262,9 @@ static esp_err_t email_send(const char *arguments, const mp_tool_context_t *cont
     if (!json_string(arguments, "to", s_arg3, sizeof(s_arg3)) ||
         !json_string(arguments, "subject", s_arg2, sizeof(s_arg2)) ||
         !json_string(arguments, "body", s_arg1, sizeof(s_arg1))) {
-        strlcpy(output, "Email fields are missing or exceed the 255, 511 and 4095 byte limits.", size);
+        snprintf(output, size, "Email fields are missing or exceed to=%u, subject=%u or body=%u bytes.",
+                 (unsigned)(sizeof(s_arg3) - 1), (unsigned)(sizeof(s_arg2) - 1),
+                 (unsigned)(sizeof(s_arg1) - 1));
         return ESP_ERR_INVALID_ARG;
     }
     mp_email_t email = {
@@ -294,6 +296,7 @@ static esp_err_t email_schedule(const char *arguments, const mp_tool_context_t *
     mp_writer_string(&writer, s_arg1);
     mp_writer_char(&writer, '}');
     if (!writer.valid || writer.length >= MP_SCHEDULE_TEXT_LEN) {
+        strlcpy(output, "Scheduled email exceeds persistent job capacity. Send it now or shorten it.", size);
         return ESP_ERR_INVALID_SIZE;
     }
     esp_err_t error = mp_scheduler_add(context->chat_id, output, delay, 0, &id);

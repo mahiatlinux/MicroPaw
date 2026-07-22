@@ -5,13 +5,14 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 
 #define MP_CHAT_ID_LEN 24
 #define MP_MESSAGE_LEN 1024
-#define MP_REPLY_LEN 4096
+#define MP_REPLY_LEN CONFIG_MICROPAW_WORK_TEXT_BYTES
 #define MP_TOOL_NAME_LEN 40
-#define MP_TOOL_ARGS_LEN 8192
-#define MP_TOOL_RESULT_LEN 4096
+#define MP_TOOL_ARGS_LEN (CONFIG_MICROPAW_WORK_TEXT_BYTES * 2 + 4096)
+#define MP_TOOL_RESULT_LEN 65536
 #define MP_MEMORY_SLOTS 8
 #define MP_MEMORY_TEXT_LEN 192
 #define MP_HISTORY_SLOTS 8

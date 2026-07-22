@@ -17,7 +17,8 @@ No source code is copied from these projects. MicroPaw uses independently writte
 
 ## Verified platform and service contracts
 
-- [ESP HTTP Client](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/protocols/esp_http_client.html) supports explicit `open`, `fetch_headers`, repeated `read`, `close` and `cleanup`. MicroPaw will use that stream-reader path and a single mutex around outbound HTTPS.
+- [ESP HTTP Client](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/protocols/esp_http_client.html) supports explicit `open`, repeated `write`, `fetch_headers`, repeated `read`, `close` and `cleanup`. MicroPaw uses those streaming paths for bounded downloads, LLM events and Gmail uploads.
+- [ESP-IDF external RAM](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-guides/external-ram.html) supports external BSS and capability-based PSRAM allocation. Fixed large work areas belong in external BSS while task stacks, queues and synchronization objects stay in internal RAM.
 - [ESP-IDF NVS](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/storage/nvs_flash.html) is intended for small values and blobs. It is power-loss tolerant. NVS encryption is effective when paired with flash encryption or the supported HMAC scheme.
 - [ESP-NETIF SNTP](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/network/esp_netif_programming.html) provides `esp_netif_sntp_init` and synchronization waiting. Scheduled wall-clock work starts only after time sync.
 - [ESP-IDF RAM guidance](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/performance/ram-usage.html) defines task high-water marks in bytes on ESP32-S3. Heap reports will include current free, minimum free and largest free blocks for internal RAM and PSRAM.
@@ -41,7 +42,9 @@ No source code is copied from these projects. MicroPaw uses independently writte
 - Keep tool definitions in a static registry. Disable parallel model tool calls and cap iterations through Kconfig.
 - Keep inference configuration separate from the agent loop. Support OpenAI, OpenRouter and a user-supplied Responses-compatible HTTPS endpoint through one stream parser. Store provider, model, endpoint and bearer key in NVS. Use `gpt-5.6-luna` as the configurable OpenAI default.
 - Put large, fixed work buffers in PSRAM. Keep task stacks and queue items in internal RAM. Do not construct a full JSON response tree for LLM streams, search results or fetched pages.
-- Use one HTTPS transport and one static mutex. No poller, LLM call or tool call can hold a second simultaneous network connection.
+- Use the measured 8 MB PSRAM headroom for a 128 KB shared text capacity, 32,768 output tokens and a larger inference stream allowance. Keep several megabytes free for TLS, Wi-Fi and temporary service allocations.
+- Stream Gmail base64url encoding into the HTTPS request. Keep only the decoded body, RFC header and a 2 KB encoding block instead of full raw, encoded and JSON payload copies.
+- Use one HTTPS transport with bounded buffers. Tool execution is serial and no operation holds a nested network connection. Telegram long polling may overlap one foreground request so a poll cannot add up to 15 seconds of response latency.
 - Store compact memory records, recent conversation state and fixed scheduler records as NVS blobs. Avoid a filesystem and repeated Markdown parsing.
 - Implement DuckDuckGo Lite as the first provider behind a small interface. Parse its HTML incrementally without a DOM, cJSON or a full-response buffer. Add optional Wikipedia, arXiv and RSS or Atom readers backed by their documented formats. Do not claim DuckDuckGo reliability until repeated connected-board tests pass.
 - ESP-IDF 6.0 no longer includes its earlier `json` component. Use one bounded JSON slice parser for LLM events, Telegram, OAuth responses and tool arguments instead of adding cJSON as an external dependency.
@@ -57,10 +60,10 @@ All three projects were built locally on 2026-07-21 for ESP32-S3 with 16 MB flas
 
 | Project | Source revision | ESP-IDF | Image bytes | Padded binary | Static DIRAM | External BSS |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| MicroPaw | `98c026e` before TOML push | 6.0.2 | 877,344 | 877,456 | 133,760 | 120,388 |
+| MicroPaw | 2026-07-22 build | 6.0.2 | 885,252 | 885,376 | 130,032 | 3,159,500 |
 | zclaw | `e3ad271244c1f2e01f4df6e81c2bab346e95d1b1` | 5.4 | 847,950 | 848,064 | 173,731 | 0 reported |
 | MimiClaw | `bb10ea0149080d506d920c09054f4c5b20409de2` | 5.5.2 | 1,180,553 | 1,180,672 | 135,783 | 0 reported |
 
-MicroPaw is 29,394 image bytes larger than the comparable zclaw build and uses 39,971 fewer static DIRAM bytes. It includes direct search, bounded page fetch, Wikipedia, arXiv and RSS or Atom support that zclaw lacks. MicroPaw is 303,209 image bytes smaller than MimiClaw and uses 2,023 fewer static DIRAM bytes. Its 120,388 bytes of fixed external BSS hold bounded request, stream, tool and channel work areas. Competitor firmware was not flashed, so no competitor runtime heap or stack numbers are presented as measured.
+MicroPaw is 37,302 image bytes larger than the comparable zclaw build and uses 43,699 fewer static DIRAM bytes. It includes direct search, bounded page fetch, Wikipedia, arXiv and RSS or Atom support that zclaw lacks. MicroPaw is 295,301 image bytes smaller than MimiClaw and uses 5,751 fewer static DIRAM bytes. Its fixed external BSS holds the larger bounded request, stream, tool and channel work areas in PSRAM. Competitor firmware was not flashed, so no competitor runtime heap or stack numbers are presented as measured.
 
 zclaw separately publishes 853,034 image bytes and about 149 KB DRAM used for its default classic ESP32 build. That repository figure is not mixed into the ESP32-S3 table.

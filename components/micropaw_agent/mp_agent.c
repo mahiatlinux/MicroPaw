@@ -1,6 +1,7 @@
 #include "mp_agent.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_attr.h"
@@ -19,11 +20,13 @@ extern const char system_txt[] asm("_binary_system_txt_start");
 extern const char scheduled_txt[] asm("_binary_scheduled_txt_start");
 
 #define AGENT_QUEUE_LENGTH 4
+#define AGENT_REQUEST_LEN (CONFIG_MICROPAW_WORK_TEXT_BYTES * 6 + 65536)
+#define AGENT_TRACE_LEN (CONFIG_MICROPAW_WORK_TEXT_BYTES * 4 + 32768)
 
-EXT_RAM_BSS_ATTR static char s_request[65536];
-EXT_RAM_BSS_ATTR static char s_instructions[4096];
+EXT_RAM_BSS_ATTR static char s_request[AGENT_REQUEST_LEN];
+EXT_RAM_BSS_ATTR static char s_instructions[8192];
 EXT_RAM_BSS_ATTR static char s_tools[8192];
-EXT_RAM_BSS_ATTR static char s_tool_trace[32768];
+EXT_RAM_BSS_ATTR static char s_tool_trace[AGENT_TRACE_LEN];
 EXT_RAM_BSS_ATTR static char s_tool_output[MP_TOOL_RESULT_LEN];
 EXT_RAM_BSS_ATTR static char s_confirm_tool[MP_TOOL_NAME_LEN];
 EXT_RAM_BSS_ATTR static char s_confirm_arguments[MP_TOOL_ARGS_LEN];
@@ -234,7 +237,8 @@ static bool build_request(const mp_message_t *message)
     }
     mp_writer_raw(&writer, "],\"tools\":");
     mp_writer_raw(&writer, s_tools);
-    mp_writer_raw(&writer, ",\"parallel_tool_calls\":false,\"stream\":true,\"store\":false,\"max_output_tokens\":1024}");
+    mp_writer_format(&writer, ",\"parallel_tool_calls\":false,\"stream\":true,\"store\":false,\"max_output_tokens\":%lu}",
+                     strtoul(config->llm_max_output_tokens, NULL, 10));
     return writer.valid;
 }
 
