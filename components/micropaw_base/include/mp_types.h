@@ -24,7 +24,6 @@ typedef enum {
     MP_AGENT_CONTEXT,
     MP_AGENT_INFERENCE,
     MP_AGENT_TOOL,
-    MP_AGENT_CONFIRMATION,
     MP_AGENT_RESPONSE,
     MP_AGENT_ERROR
 } mp_agent_state_t;

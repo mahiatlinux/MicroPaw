@@ -4,7 +4,7 @@
 
 <h1 align="center">MicroPaw</h1>
 
-MicroPaw keeps its agent loop, tools, memory, schedules, confirmations and channel routing on an ESP32. Remote services supply inference and requested data. They do not own the assistant state.
+MicroPaw keeps its agent loop, tools, memory, schedules and channel routing on an ESP32. Remote services supply inference and requested data. They do not own the assistant state.
 
 The current build targets the detected ESP32-S3 revision 0.2 with 16 MB flash, 8 MB octal PSRAM, a 40 MHz crystal and native USB Serial/JTAG. It uses ESP-IDF 6.0.2 and C only.
 
@@ -14,7 +14,7 @@ The current build targets the detected ESP32-S3 revision 0.2 with 16 MB flash, 8
 - Telegram long polling with one configured owner chat
 - NVS-backed durable facts, recent conversation records and eight scheduled jobs
 - One-time and repeating reminders with proactive Telegram delivery
-- Five-minute confirmation IDs for Gmail sends and Google Calendar writes
+- Independent `allowed`, `permission` and `disabled` modes for email and Calendar
 - Direct DuckDuckGo Lite search with a small streaming HTML state machine
 - Replaceable search interface plus Wikipedia and arXiv providers
 - Direct, bounded page fetching with incremental HTML text extraction
@@ -52,6 +52,8 @@ owner_chat_id = "NUMERIC_CHAT_ID"
 llm_provider = "openai"
 llm_api_key = "API_KEY"
 llm_model = "gpt-5.6-luna"
+email_permission = "permission"
+calendar_permission = "permission"
 timezone = "NZST-12NZDT,M9.5.0,M4.1.0/3"
 ```
 
@@ -73,11 +75,13 @@ set owner_chat_id NUMERIC_CHAT_ID
 set llm_provider openai
 set llm_api_key API_KEY
 set llm_model gpt-5.6-luna
+set email_permission permission
+set calendar_permission permission
 set timezone NZST-12NZDT,M9.5.0,M4.1.0/3
 reboot
 ```
 
-`config` reports which secrets are set without printing their values. `push-config BYTES` is the bounded serial protocol used by the push script. `erase-config YES` removes every stored configuration value. `metrics` prints heap minima, largest blocks and active-task stack watermarks. `submit TEXT` sends a local test request to the agent queue. LLM provider changes apply to the next request. Reboot after changing Wi-Fi, Telegram or timezone values.
+`config` reports which secrets are set without printing their values. `push-config BYTES` is the bounded serial protocol used by the push script. `erase-config YES` removes every stored configuration value. `metrics` prints heap minima, largest blocks and active-task stack watermarks. `submit TEXT` sends a local test request to the agent queue. LLM provider and permission changes apply to the next request. Reboot after changing Wi-Fi, Telegram or timezone values.
 
 ## LLM providers
 
@@ -120,23 +124,32 @@ idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.secure" build
 
 Flash encryption can change eFuses and device recovery behaviour. Do not enable it as a casual development setting.
 
-## Optional Google tools
+## Google tools
 
-Enable `MICROPAW_GMAIL` or `MICROPAW_CALENDAR` with `idf.py menuconfig`. Obtain offline OAuth consent outside the device, then provision the resulting values over serial:
+Gmail and Calendar are enabled by default. Enable both APIs in the Google Cloud project, then obtain offline OAuth consent for these scopes in one grant:
+
+```text
+https://www.googleapis.com/auth/gmail.send
+https://www.googleapis.com/auth/calendar.events.owned
+```
+
+Provision the resulting values over serial:
 
 ```text
 set google_client_id CLIENT_ID
 set google_client_secret CLIENT_SECRET
 set google_refresh_token REFRESH_TOKEN
+set email_permission permission
+set calendar_permission permission
 ```
 
-The device refreshes the access token directly at Google. Gmail uses `users.messages.send`; Calendar uses `events.insert`. Both write operations require a short-lived `/confirm ID` command from the same Telegram owner. `/cancel ID` rejects one.
+The device refreshes the access token directly at Google. Gmail uses `users.messages.send` and Calendar uses `events.insert`. Each tool has its own permission mode. `allowed` executes immediately, `permission` waits up to five minutes for `/confirm ID`, and `disabled` hides and blocks the tool. `/cancel ID` rejects a pending action. The default is `permission`.
 
 ## Commands and tools
 
 Telegram commands are `/help`, `/metrics`, `/memory`, `/jobs`, `/forget`, `/confirm ID` and `/cancel ID`.
 
-The model can call `memory_save`, `memory_list`, `schedule_add`, `schedule_list`, `schedule_delete`, `time_now`, `diagnostics`, `web_search`, `web_fetch` and `rss_read`. Optional builds add `email_send` and `calendar_create`.
+The model can call `memory_save`, `memory_list`, `schedule_add`, `schedule_list`, `schedule_delete`, `time_now`, `diagnostics`, `web_search`, `web_fetch` and `rss_read`. `email_send` and `calendar_create` appear unless their permission is `disabled`.
 
 Search returns at most five titles, URLs and snippets. `web_fetch` accepts only a URL from the latest result set, follows at most one public HTTPS redirect, checks content type, stops at the configured byte limit and returns bounded visible text.
 
@@ -146,7 +159,7 @@ Run `scripts/report.ps1 -Port COM3` from an exported ESP-IDF shell. It writes bu
 
 - `prompts/` contains the system and scheduled-turn prompts as separate source files.
 - `components/micropaw_agent/` contains the state machine and inference client.
-- `components/micropaw_base/` contains configuration, memory, scheduling, confirmations, JSON slices and metrics.
+- `components/micropaw_base/` contains configuration, memory, scheduling, permission state, JSON slices and metrics.
 - `components/micropaw_net/` owns Wi-Fi, time sync and all HTTPS connections.
 - `components/micropaw_tools/` contains the static registry and service integrations.
 - `components/micropaw_telegram/` contains the first channel adapter.
@@ -154,4 +167,4 @@ Run `scripts/report.ps1 -Port COM3` from an exported ESP-IDF shell. It writes bu
 
 ## Current test limits
 
-Build, flash, PSRAM startup, NVS defaults, scheduler startup and the original serial commands have been tested on the connected board. The TOML push is not yet hardware-tested. Wi-Fi, Telegram, OpenAI, OpenRouter, custom inference, DuckDuckGo, specialised searches, page fetching and Google writes have not been exercised on-board because no user credentials or network configuration were provisioned. Gmail and Calendar also remain disabled in the measured default build.
+Build, flash, PSRAM startup, NVS defaults, scheduler startup and the original serial commands have been tested on the connected board. The TOML push and permission modes are not yet hardware-tested. Wi-Fi, Telegram, OpenAI, OpenRouter, custom inference, DuckDuckGo, specialised searches, page fetching and Google writes have not been exercised on-board because no user credentials or network configuration were provisioned. The measured build predates Gmail and Calendar being enabled by default.

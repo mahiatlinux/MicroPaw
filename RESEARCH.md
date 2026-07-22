@@ -37,7 +37,7 @@ No source code is copied from these projects. MicroPaw uses independently writte
 
 - Target the detected ESP32-S3 with 16 MB flash and 8 MB embedded PSRAM using ESP-IDF 6.0.2 and C only.
 - Use one fixed inbound queue and one agent task. The scheduler and Telegram poller enqueue compact value messages. No task transfers heap-owned message strings.
-- Use an explicit agent state machine: idle, context, inference, tool, confirmation, response and error.
+- Use an explicit agent state machine: idle, context, inference, tool, response and error.
 - Keep tool definitions in a static registry. Disable parallel model tool calls and cap iterations through Kconfig.
 - Keep inference configuration separate from the agent loop. Support OpenAI, OpenRouter and a user-supplied Responses-compatible HTTPS endpoint through one stream parser. Store provider, model, endpoint and bearer key in NVS. Use `gpt-5.6-luna` as the configurable OpenAI default.
 - Put large, fixed work buffers in PSRAM. Keep task stacks and queue items in internal RAM. Do not construct a full JSON response tree for LLM streams, search results or fetched pages.
@@ -45,7 +45,7 @@ No source code is copied from these projects. MicroPaw uses independently writte
 - Store compact memory records, recent conversation state and fixed scheduler records as NVS blobs. Avoid a filesystem and repeated Markdown parsing.
 - Implement DuckDuckGo Lite as the first provider behind a small interface. Parse its HTML incrementally without a DOM, cJSON or a full-response buffer. Add optional Wikipedia, arXiv and RSS or Atom readers backed by their documented formats. Do not claim DuckDuckGo reliability until repeated connected-board tests pass.
 - ESP-IDF 6.0 no longer includes its earlier `json` component. Use one bounded JSON slice parser for LLM events, Telegram, OAuth responses and tool arguments instead of adding cJSON as an external dependency.
-- Require owner-chat authorization. Require short-lived confirmation IDs for email and calendar writes. Treat fetched web text as untrusted data and never as instructions.
+- Require owner-chat authorization. Give email and Calendar independent `allowed`, `permission` and `disabled` modes stored in local configuration. Treat fetched web text as untrusted data and never as instructions.
 - Use direct Gmail and Calendar REST calls with an externally provisioned refresh token. No relay is needed after consent. OAuth browser consent is outside the ESP32.
 - Provision secrets over the local serial console, individually or through a bounded TOML push, into NVS. Never compile or commit credentials. Provide a separate production security config for NVS and flash encryption, but do not enable irreversible eFuse settings during development flashing.
 - Make Telegram, search, page fetch, Gmail and Calendar removable through Kconfig. Exclude GPIO, WebSocket, OTA, AP portal, Lua, file tools and unrelated hardware features.

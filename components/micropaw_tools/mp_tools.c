@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include "esp_attr.h"
+#include "mp_config.h"
 #include "mp_confirmation.h"
 #include "mp_feed.h"
 #include "mp_json.h"
@@ -33,9 +34,14 @@ typedef esp_err_t (*tool_fn)(const char *arguments, const mp_tool_context_t *con
 typedef struct {
     const char *name;
     const char *schema;
-    bool confirmation;
     tool_fn execute;
 } tool_t;
+
+typedef enum {
+    TOOL_ALLOWED,
+    TOOL_PERMISSION,
+    TOOL_DISABLED
+} tool_mode_t;
 
 EXT_RAM_BSS_ATTR static char s_arg1[2048];
 #if CONFIG_MICROPAW_GMAIL || CONFIG_MICROPAW_CALENDAR
@@ -50,6 +56,8 @@ EXT_RAM_BSS_ATTR static char s_arg4[128];
 
 static bool json_string(const char *json, const char *name, char *output, size_t size);
 static bool json_uint(const char *json, const char *name, uint32_t *value);
+static tool_mode_t permission_mode(const char *permission);
+static tool_mode_t tool_mode(const tool_t *tool);
 static esp_err_t memory_save(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t memory_list(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t schedule_add(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
@@ -73,29 +81,56 @@ esp_err_t mp_tools_execute(const char *name, const char *arguments,
                            char *output, size_t size);
 
 static const tool_t s_tools[] = {
-    {"memory_save", "{\"type\":\"function\",\"name\":\"memory_save\",\"description\":\"Save one durable fact for later conversations.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"note\":{\"type\":\"string\"}},\"required\":[\"note\"],\"additionalProperties\":false}}", false, memory_save},
-    {"memory_list", "{\"type\":\"function\",\"name\":\"memory_list\",\"description\":\"Read durable facts.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", false, memory_list},
-    {"schedule_add", "{\"type\":\"function\",\"name\":\"schedule_add\",\"description\":\"Schedule a future assistant turn. repeat_seconds is zero for a one-time job.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"prompt\",\"delay_seconds\",\"repeat_seconds\"],\"additionalProperties\":false}}", false, schedule_add},
-    {"schedule_list", "{\"type\":\"function\",\"name\":\"schedule_list\",\"description\":\"List scheduled jobs.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", false, schedule_list},
-    {"schedule_delete", "{\"type\":\"function\",\"name\":\"schedule_delete\",\"description\":\"Delete a scheduled job by ID.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", false, schedule_delete},
-    {"time_now", "{\"type\":\"function\",\"name\":\"time_now\",\"description\":\"Read the device local date and time.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", false, time_now},
-    {"diagnostics", "{\"type\":\"function\",\"name\":\"diagnostics\",\"description\":\"Read heap and task stack measurements.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", false, diagnostics},
+    {"memory_save", "{\"type\":\"function\",\"name\":\"memory_save\",\"description\":\"Save one durable fact for later conversations.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"note\":{\"type\":\"string\"}},\"required\":[\"note\"],\"additionalProperties\":false}}", memory_save},
+    {"memory_list", "{\"type\":\"function\",\"name\":\"memory_list\",\"description\":\"Read durable facts.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", memory_list},
+    {"schedule_add", "{\"type\":\"function\",\"name\":\"schedule_add\",\"description\":\"Schedule a future assistant turn. repeat_seconds is zero for a one-time job.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"prompt\",\"delay_seconds\",\"repeat_seconds\"],\"additionalProperties\":false}}", schedule_add},
+    {"schedule_list", "{\"type\":\"function\",\"name\":\"schedule_list\",\"description\":\"List scheduled jobs.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", schedule_list},
+    {"schedule_delete", "{\"type\":\"function\",\"name\":\"schedule_delete\",\"description\":\"Delete a scheduled job by ID.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", schedule_delete},
+    {"time_now", "{\"type\":\"function\",\"name\":\"time_now\",\"description\":\"Read the device local date and time.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", time_now},
+    {"diagnostics", "{\"type\":\"function\",\"name\":\"diagnostics\",\"description\":\"Read heap and task stack measurements.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", diagnostics},
 #if CONFIG_MICROPAW_WEB_SEARCH
-    {"web_search", "{\"type\":\"function\",\"name\":\"web_search\",\"description\":\"Search through DuckDuckGo Lite or an official specialised source. Returned page URLs may be passed to web_fetch.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"provider\":{\"type\":\"string\",\"enum\":[\"duckduckgo\"" MP_PROVIDER_WIKIPEDIA MP_PROVIDER_ARXIV "]}},\"required\":[\"query\",\"provider\"],\"additionalProperties\":false}}", false, web_search},
+    {"web_search", "{\"type\":\"function\",\"name\":\"web_search\",\"description\":\"Search through DuckDuckGo Lite or an official specialised source. Returned page URLs may be passed to web_fetch.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"provider\":{\"type\":\"string\",\"enum\":[\"duckduckgo\"" MP_PROVIDER_WIKIPEDIA MP_PROVIDER_ARXIV "]}},\"required\":[\"query\",\"provider\"],\"additionalProperties\":false}}", web_search},
 #if CONFIG_MICROPAW_WEB_FETCH
-    {"web_fetch", "{\"type\":\"function\",\"name\":\"web_fetch\",\"description\":\"Fetch one HTTPS URL from the most recent search results and return bounded visible text.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"required\":[\"url\"],\"additionalProperties\":false}}", false, web_fetch},
+    {"web_fetch", "{\"type\":\"function\",\"name\":\"web_fetch\",\"description\":\"Fetch one HTTPS URL from the most recent search results and return bounded visible text.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"required\":[\"url\"],\"additionalProperties\":false}}", web_fetch},
 #endif
 #endif
 #if CONFIG_MICROPAW_RSS
-    {"rss_read", "{\"type\":\"function\",\"name\":\"rss_read\",\"description\":\"Read the first five items from a public HTTPS RSS or Atom feed.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"required\":[\"url\"],\"additionalProperties\":false}}", false, rss_read},
+    {"rss_read", "{\"type\":\"function\",\"name\":\"rss_read\",\"description\":\"Read the first five items from a public HTTPS RSS or Atom feed.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"required\":[\"url\"],\"additionalProperties\":false}}", rss_read},
 #endif
 #if CONFIG_MICROPAW_GMAIL
-    {"email_send", "{\"type\":\"function\",\"name\":\"email_send\",\"description\":\"Send a plain-text email through Gmail after user confirmation.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"to\",\"subject\",\"body\"],\"additionalProperties\":false}}", true, email_send},
+    {"email_send", "{\"type\":\"function\",\"name\":\"email_send\",\"description\":\"Send a plain-text email through Gmail.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"to\",\"subject\",\"body\"],\"additionalProperties\":false}}", email_send},
 #endif
 #if CONFIG_MICROPAW_CALENDAR
-    {"calendar_create", "{\"type\":\"function\",\"name\":\"calendar_create\",\"description\":\"Create a Google Calendar event after user confirmation.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"start_rfc3339\":{\"type\":\"string\"},\"end_rfc3339\":{\"type\":\"string\"}},\"required\":[\"summary\",\"start_rfc3339\",\"end_rfc3339\"],\"additionalProperties\":false}}", true, calendar_create},
+    {"calendar_create", "{\"type\":\"function\",\"name\":\"calendar_create\",\"description\":\"Create a Google Calendar event.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"start_rfc3339\":{\"type\":\"string\"},\"end_rfc3339\":{\"type\":\"string\"}},\"required\":[\"summary\",\"start_rfc3339\",\"end_rfc3339\"],\"additionalProperties\":false}}", calendar_create},
 #endif
 };
+
+static tool_mode_t permission_mode(const char *permission)
+{
+    if (strcmp(permission, "allowed") == 0) {
+        return TOOL_ALLOWED;
+    }
+    if (strcmp(permission, "permission") == 0) {
+        return TOOL_PERMISSION;
+    }
+    return TOOL_DISABLED;
+}
+
+static tool_mode_t tool_mode(const tool_t *tool)
+{
+    const mp_config_t *config = mp_config_get();
+#if CONFIG_MICROPAW_GMAIL
+    if (tool->execute == email_send) {
+        return permission_mode(config->email_permission);
+    }
+#endif
+#if CONFIG_MICROPAW_CALENDAR
+    if (tool->execute == calendar_create) {
+        return permission_mode(config->calendar_permission);
+    }
+#endif
+    return TOOL_ALLOWED;
+}
 
 static bool json_string(const char *json, const char *name, char *output, size_t size)
 {
@@ -259,11 +294,16 @@ bool mp_tools_json(char *output, size_t size)
     mp_writer_t writer;
     mp_writer_init(&writer, output, size);
     mp_writer_char(&writer, '[');
+    bool first = true;
     for (size_t index = 0; index < sizeof(s_tools) / sizeof(s_tools[0]); index++) {
-        if (index) {
+        if (tool_mode(&s_tools[index]) == TOOL_DISABLED) {
+            continue;
+        }
+        if (!first) {
             mp_writer_char(&writer, ',');
         }
         mp_writer_raw(&writer, s_tools[index].schema);
+        first = false;
     }
     mp_writer_char(&writer, ']');
     return writer.valid;
@@ -286,11 +326,15 @@ esp_err_t mp_tools_execute(const char *name, const char *arguments,
     if (!tool) {
         return ESP_ERR_NOT_FOUND;
     }
-    if (tool->confirmation && !confirmed) {
+    tool_mode_t mode = tool_mode(tool);
+    if (mode == TOOL_DISABLED) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (mode == TOOL_PERMISSION && !confirmed) {
         uint32_t id;
         esp_err_t error = mp_confirmation_request(context->chat_id, name, arguments, &id);
         if (error == ESP_OK) {
-            snprintf(output, size, "Confirmation required. Send /confirm %lu within five minutes.",
+            snprintf(output, size, "Permission required. Send /confirm %lu within five minutes.",
                      (unsigned long)id);
         }
         return error;
