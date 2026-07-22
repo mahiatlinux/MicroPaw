@@ -1,6 +1,7 @@
 #include "mp_net.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <string.h>
 #include <strings.h>
 
@@ -87,7 +88,10 @@ static esp_err_t write_body(esp_http_client_handle_t client, const char *body, s
 esp_err_t mp_http_stream(const mp_http_request_t *request, mp_http_chunk_fn callback,
                          void *context, mp_http_response_t *response)
 {
-    if (!request || !request->url || !response || !mp_url_is_https(request->url)) {
+    if (!request || !request->url || !response || !mp_url_is_https(request->url) ||
+        request->body_size > INT_MAX ||
+        (request->body_size && !request->body && !request->write) ||
+        (request->body && request->write)) {
         return ESP_ERR_INVALID_ARG;
     }
     memset(response, 0, sizeof(*response));
@@ -111,9 +115,10 @@ esp_err_t mp_http_stream(const mp_http_request_t *request, mp_http_chunk_fn call
     for (size_t index = 0; index < request->header_count; index++) {
         esp_http_client_set_header(client, request->headers[index].name, request->headers[index].value);
     }
-    esp_err_t error = esp_http_client_open(client, request->body_size);
+    esp_err_t error = esp_http_client_open(client, (int)request->body_size);
     if (error == ESP_OK && request->body_size) {
-        error = write_body(client, request->body, request->body_size);
+        error = request->write ? request->write(client, request->write_context) :
+                write_body(client, request->body, request->body_size);
     }
     if (error == ESP_OK && esp_http_client_fetch_headers(client) < 0) {
         error = ESP_ERR_HTTP_FETCH_HEADER;

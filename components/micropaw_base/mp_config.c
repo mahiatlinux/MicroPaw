@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_attr.h"
@@ -30,6 +31,7 @@ static const config_field_t s_fields[] = {
     {"llm_api_key", "llm_key", offsetof(mp_config_t, llm_api_key), sizeof(s_config.llm_api_key), true},
     {"llm_model", "model", offsetof(mp_config_t, llm_model), sizeof(s_config.llm_model), false},
     {"llm_endpoint", "llm_endpoint", offsetof(mp_config_t, llm_endpoint), sizeof(s_config.llm_endpoint), false},
+    {"llm_max_output_tokens", "llm_tokens", offsetof(mp_config_t, llm_max_output_tokens), sizeof(s_config.llm_max_output_tokens), false},
     {"google_client_id", "google_id", offsetof(mp_config_t, google_client_id), sizeof(s_config.google_client_id), true},
     {"google_client_secret", "google_sec", offsetof(mp_config_t, google_client_secret), sizeof(s_config.google_client_secret), true},
     {"google_refresh_token", "google_ref", offsetof(mp_config_t, google_refresh_token), sizeof(s_config.google_refresh_token), true},
@@ -60,6 +62,8 @@ static void config_defaults(void)
     memset(&s_config, 0, sizeof(s_config));
     strlcpy(s_config.llm_provider, "openai", sizeof(s_config.llm_provider));
     strlcpy(s_config.llm_model, CONFIG_MICROPAW_LLM_MODEL, sizeof(s_config.llm_model));
+    snprintf(s_config.llm_max_output_tokens, sizeof(s_config.llm_max_output_tokens), "%d",
+             CONFIG_MICROPAW_LLM_MAX_OUTPUT_TOKENS);
     strlcpy(s_config.email_permission, "permission", sizeof(s_config.email_permission));
     strlcpy(s_config.calendar_permission, "permission", sizeof(s_config.calendar_permission));
     strlcpy(s_config.timezone, "UTC0", sizeof(s_config.timezone));
@@ -103,6 +107,12 @@ static bool valid_value(config_field_t field, const char *value)
     }
     if (strcmp(field.name, "llm_endpoint") == 0) {
         return !value[0] || strncmp(value, "https://", 8) == 0;
+    }
+    if (strcmp(field.name, "llm_max_output_tokens") == 0) {
+        char *end;
+        unsigned long parsed = strtoul(value, &end, 10);
+        return value[0] && !*end && parsed >= 1024 &&
+               parsed <= CONFIG_MICROPAW_LLM_MAX_OUTPUT_TOKENS;
     }
     if (strcmp(field.name, "email_permission") == 0 ||
         strcmp(field.name, "calendar_permission") == 0) {

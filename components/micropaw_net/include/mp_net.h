@@ -13,6 +13,7 @@ typedef struct {
 } mp_http_header_t;
 
 typedef bool (*mp_http_chunk_fn)(const uint8_t *data, size_t size, void *context);
+typedef esp_err_t (*mp_http_write_fn)(esp_http_client_handle_t client, void *context);
 
 typedef struct {
     const char *url;
@@ -21,6 +22,8 @@ typedef struct {
     size_t header_count;
     const char *body;
     size_t body_size;
+    mp_http_write_fn write;
+    void *write_context;
     size_t response_limit;
     int timeout_ms;
     const char *accepted_content_types;

@@ -25,6 +25,7 @@ owner_chat_id = "CHAT_ID"
 llm_provider = "openrouter"
 llm_api_key = "API_KEY"
 llm_model = "openai/gpt-5.6-luna"
+llm_max_output_tokens = "32768"
 google_client_id = "CLIENT_ID"
 google_client_secret = "CLIENT_SECRET"
 google_refresh_token = "REFRESH_TOKEN"
@@ -41,7 +42,9 @@ python scripts/push_config.py PORT secrets/credentials.toml --reboot
 
 The TOML file stays on the computer. `allowed` runs Gmail or Calendar actions immediately, `permission` asks through Telegram, and `disabled` turns the tool off.
 
-The agent can run eight sequential tool calls per turn. Kconfig can set the limit from 1 to 12.
+The agent can run 12 sequential tool calls per turn. Kconfig can lower the limit.
+
+OpenAI, OpenRouter and custom Responses-compatible HTTPS endpoints use the same streamed agent path. The default build allows 32,768 output tokens and 128 KB of reply or immediate-email text. Both values are configurable in Kconfig. Gmail uploads are base64url encoded while they are sent, so encoded and JSON copies are not kept in RAM. Scheduled emails are smaller because they must fit persistent NVS job storage.
 
 Google OAuth needs these scopes in one offline grant:
 

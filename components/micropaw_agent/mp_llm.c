@@ -19,7 +19,7 @@ typedef struct {
 EXT_RAM_BSS_ATTR static sse_parser_t s_parser;
 EXT_RAM_BSS_ATTR static char s_value[MP_TOOL_ARGS_LEN];
 
-static void append_text(char *target, size_t size, const char *text);
+static bool append_text(char *target, size_t size, const char *text);
 static bool provider(const mp_config_t *config, const char **url, bool *key_required);
 static void parse_event(mp_llm_result_t *result, const char *data);
 static void process_line(sse_parser_t *parser);
@@ -27,12 +27,15 @@ static bool sse_chunk(const uint8_t *data, size_t size, void *context);
 bool mp_llm_ready(void);
 esp_err_t mp_llm_stream(const char *body, mp_llm_result_t *result);
 
-static void append_text(char *target, size_t size, const char *text)
+static bool append_text(char *target, size_t size, const char *text)
 {
     size_t used = strnlen(target, size);
-    if (used < size) {
-        strlcpy(target + used, text, size - used);
+    size_t length = strlen(text);
+    if (used >= size || length >= size - used) {
+        return false;
     }
+    memcpy(target + used, text, length + 1);
+    return true;
 }
 
 static bool provider(const mp_config_t *config, const char **url, bool *key_required)
@@ -68,7 +71,10 @@ static void parse_event(mp_llm_result_t *result, const char *data)
     if (strcmp(type, "response.output_text.delta") == 0 ||
         strcmp(type, "response.content_part.delta") == 0) {
         if (mp_json_get_string(data, length, "delta", s_value, sizeof(s_value))) {
-            append_text(result->text, sizeof(result->text), s_value);
+            if (!append_text(result->text, sizeof(result->text), s_value)) {
+                strlcpy(result->error, "Inference response exceeded device capacity.",
+                        sizeof(result->error));
+            }
         }
     } else if (strcmp(type, "response.output_item.added") == 0 ||
                strcmp(type, "response.output_item.done") == 0) {
@@ -91,7 +97,10 @@ static void parse_event(mp_llm_result_t *result, const char *data)
         }
     } else if (strcmp(type, "response.function_call_arguments.delta") == 0) {
         if (mp_json_get_string(data, length, "delta", s_value, sizeof(s_value))) {
-            append_text(result->arguments, sizeof(result->arguments), s_value);
+            if (!append_text(result->arguments, sizeof(result->arguments), s_value)) {
+                strlcpy(result->error, "Inference tool arguments exceeded device capacity.",
+                        sizeof(result->error));
+            }
         }
     } else if (strcmp(type, "response.function_call_arguments.done") == 0) {
         mp_json_get_string(data, length, "arguments", result->arguments, sizeof(result->arguments));
