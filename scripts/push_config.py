@@ -33,8 +33,10 @@ def push(name, path, reboot):
         port.write(f"push-config {len(data)}\n".encode())
         port.flush()
         wait_for(port, "CONFIG READY", 5)
-        port.write(data)
-        port.flush()
+        for offset in range(0, len(data), 64):
+            port.write(data[offset:offset + 64])
+            port.flush()
+            time.sleep(0.03)
         wait_for(port, "CONFIG OK", 10)
         if reboot:
             port.write(b"reboot\n")
