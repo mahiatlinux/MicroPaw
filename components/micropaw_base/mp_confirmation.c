@@ -22,6 +22,7 @@ static void clear_pending(void);
 static bool matches(const char *chat_id, uint32_t id);
 esp_err_t mp_confirmation_request(const char *chat_id, const char *tool, const char *arguments,
                                   uint32_t *id);
+void mp_confirmation_reset(void);
 esp_err_t mp_confirmation_take(const char *chat_id, uint32_t id, char *tool, size_t tool_size,
                                char *arguments, size_t arguments_size);
 esp_err_t mp_confirmation_cancel(const char *chat_id, uint32_t id);
@@ -59,6 +60,12 @@ esp_err_t mp_confirmation_request(const char *chat_id, const char *tool, const c
     strlcpy(s_pending.arguments, arguments, sizeof(s_pending.arguments));
     *id = s_pending.id;
     return ESP_OK;
+}
+
+void mp_confirmation_reset(void)
+{
+    clear_pending();
+    s_next_id = 1000;
 }
 
 esp_err_t mp_confirmation_take(const char *chat_id, uint32_t id, char *tool, size_t tool_size,

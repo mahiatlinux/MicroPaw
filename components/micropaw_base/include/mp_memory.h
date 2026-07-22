@@ -6,6 +6,7 @@
 #include "mp_types.h"
 
 esp_err_t mp_memory_init(void);
+esp_err_t mp_memory_reset(void);
 esp_err_t mp_memory_save(const char *text);
 void mp_memory_format(char *output, size_t size);
 esp_err_t mp_history_add_exchange(const char *chat_id, const char *user,

@@ -133,7 +133,7 @@ static void process_message(const mp_message_t *message)
 static bool handle_command(const mp_message_t *message)
 {
     if (strcmp(message->text, "/help") == 0 || strcmp(message->text, "/start") == 0) {
-        send_reply(message->chat_id, "MicroPaw is ready. Commands: /metrics, /memory, /jobs, /forget, /confirm ID, /cancel ID.");
+        send_reply(message->chat_id, "MicroPaw is ready. Commands: /metrics, /memory, /jobs, /forget, /reset-state YES, /confirm ID, /cancel ID.");
         return true;
     }
     if (strcmp(message->text, "/metrics") == 0) {
@@ -154,6 +154,17 @@ static bool handle_command(const mp_message_t *message)
     if (strcmp(message->text, "/forget") == 0) {
         esp_err_t error = mp_history_clear(message->chat_id);
         send_reply(message->chat_id, error == ESP_OK ? "Recent conversation cleared." : esp_err_to_name(error));
+        return true;
+    }
+    if (strcmp(message->text, "/reset-state YES") == 0) {
+        esp_err_t error = mp_memory_reset();
+        if (error == ESP_OK) {
+            error = mp_scheduler_reset();
+        }
+        if (error == ESP_OK) {
+            mp_confirmation_reset();
+        }
+        send_reply(message->chat_id, error == ESP_OK ? "Memory and jobs cleared." : esp_err_to_name(error));
         return true;
     }
     unsigned long parsed;

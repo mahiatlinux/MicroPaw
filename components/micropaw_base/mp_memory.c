@@ -45,6 +45,7 @@ static esp_err_t save_blob(const char *key, const void *data, size_t size);
 static int oldest_memory_slot(void);
 static int next_memory_slot(uint32_t sequence);
 esp_err_t mp_memory_init(void);
+esp_err_t mp_memory_reset(void);
 esp_err_t mp_memory_save(const char *text);
 void mp_memory_format(char *output, size_t size);
 esp_err_t mp_history_add_exchange(const char *chat_id, const char *user,
@@ -133,6 +134,22 @@ esp_err_t mp_memory_init(void)
         s_history.magic = HISTORY_MAGIC;
     }
     return ESP_OK;
+}
+
+esp_err_t mp_memory_reset(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    memset(&s_memory, 0, sizeof(s_memory));
+    memset(&s_history, 0, sizeof(s_history));
+    s_memory.magic = MEMORY_MAGIC;
+    s_memory.next_sequence = 1;
+    s_history.magic = HISTORY_MAGIC;
+    esp_err_t error = save_blob("facts", &s_memory, sizeof(s_memory));
+    if (error == ESP_OK) {
+        error = save_blob("history", &s_history, sizeof(s_history));
+    }
+    xSemaphoreGive(s_lock);
+    return error;
 }
 
 esp_err_t mp_memory_save(const char *text)
