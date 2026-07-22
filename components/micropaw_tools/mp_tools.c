@@ -43,7 +43,7 @@ typedef enum {
     TOOL_DISABLED
 } tool_mode_t;
 
-EXT_RAM_BSS_ATTR static char s_arg1[2048];
+EXT_RAM_BSS_ATTR static char s_arg1[4096];
 #if CONFIG_MICROPAW_GMAIL || CONFIG_MICROPAW_CALENDAR
 EXT_RAM_BSS_ATTR static char s_arg2[512];
 #endif
@@ -101,7 +101,7 @@ static const tool_t s_tools[] = {
     {"rss_read", "{\"type\":\"function\",\"name\":\"rss_read\",\"description\":\"Read the first five items from a public HTTPS RSS or Atom feed.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"required\":[\"url\"],\"additionalProperties\":false}}", rss_read},
 #endif
 #if CONFIG_MICROPAW_GMAIL
-    {"email_send", "{\"type\":\"function\",\"name\":\"email_send\",\"description\":\"Send a plain-text email through Gmail.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"to\",\"subject\",\"body\"],\"additionalProperties\":false}}", email_send},
+    {"email_send", "{\"type\":\"function\",\"name\":\"email_send\",\"description\":\"Send a plain-text email through Gmail. Recipient, subject and body limits are 255, 511 and 4095 bytes.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"to\",\"subject\",\"body\"],\"additionalProperties\":false}}", email_send},
     {"email_schedule", "{\"type\":\"function\",\"name\":\"email_schedule\",\"description\":\"Schedule an exact plain-text Gmail email. Use this instead of schedule_add for delayed email. The current email permission is checked when it is due.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"}},\"required\":[\"to\",\"subject\",\"body\",\"delay_seconds\"],\"additionalProperties\":false}}", email_schedule},
 #endif
 #if CONFIG_MICROPAW_CALENDAR
@@ -262,6 +262,7 @@ static esp_err_t email_send(const char *arguments, const mp_tool_context_t *cont
     if (!json_string(arguments, "to", s_arg3, sizeof(s_arg3)) ||
         !json_string(arguments, "subject", s_arg2, sizeof(s_arg2)) ||
         !json_string(arguments, "body", s_arg1, sizeof(s_arg1))) {
+        strlcpy(output, "Email fields are missing or exceed the 255, 511 and 4095 byte limits.", size);
         return ESP_ERR_INVALID_ARG;
     }
     mp_email_t email = {

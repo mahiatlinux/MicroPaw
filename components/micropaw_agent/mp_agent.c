@@ -20,11 +20,13 @@ extern const char scheduled_txt[] asm("_binary_scheduled_txt_start");
 
 #define AGENT_QUEUE_LENGTH 4
 
-EXT_RAM_BSS_ATTR static char s_request[32768];
+EXT_RAM_BSS_ATTR static char s_request[65536];
 EXT_RAM_BSS_ATTR static char s_instructions[4096];
 EXT_RAM_BSS_ATTR static char s_tools[8192];
-EXT_RAM_BSS_ATTR static char s_tool_trace[12288];
+EXT_RAM_BSS_ATTR static char s_tool_trace[32768];
 EXT_RAM_BSS_ATTR static char s_tool_output[MP_TOOL_RESULT_LEN];
+EXT_RAM_BSS_ATTR static char s_confirm_tool[MP_TOOL_NAME_LEN];
+EXT_RAM_BSS_ATTR static char s_confirm_arguments[MP_TOOL_ARGS_LEN];
 EXT_RAM_BSS_ATTR static mp_llm_result_t s_result;
 static StaticQueue_t s_queue_buffer;
 static uint8_t s_queue_storage[AGENT_QUEUE_LENGTH * sizeof(mp_message_t)];
@@ -94,7 +96,8 @@ static void process_message(const mp_message_t *message)
         send_reply(message->chat_id, "The request exceeded the device buffer.");
         return;
     }
-    for (int round = 0; round < CONFIG_MICROPAW_MAX_TOOL_ROUNDS; round++) {
+    int tool_calls = 0;
+    while (true) {
         s_state = MP_AGENT_INFERENCE;
         esp_err_t error = mp_llm_stream(s_request, &s_result);
         if (error != ESP_OK) {
@@ -111,6 +114,14 @@ static void process_message(const mp_message_t *message)
             }
             return;
         }
+        if (tool_calls >= CONFIG_MICROPAW_MAX_TOOL_ROUNDS) {
+            s_state = MP_AGENT_ERROR;
+            snprintf(s_tool_output, sizeof(s_tool_output), "The tool-call limit was reached after %d calls.",
+                     tool_calls);
+            send_reply(message->chat_id, s_tool_output);
+            return;
+        }
+        tool_calls++;
         s_state = MP_AGENT_TOOL;
         mp_tool_context_t context = {0};
         strlcpy(context.chat_id, message->chat_id, sizeof(context.chat_id));
@@ -126,8 +137,6 @@ static void process_message(const mp_message_t *message)
             return;
         }
     }
-    s_state = MP_AGENT_ERROR;
-    send_reply(message->chat_id, "The tool-round limit was reached.");
 }
 
 static bool handle_command(const mp_message_t *message)
@@ -297,10 +306,9 @@ static void send_reply(const char *chat_id, const char *text)
 
 static void execute_confirmation(const mp_message_t *message, uint32_t id)
 {
-    char tool[MP_TOOL_NAME_LEN];
-    char arguments[MP_TOOL_ARGS_LEN];
-    esp_err_t error = mp_confirmation_take(message->chat_id, id, tool, sizeof(tool),
-                                            arguments, sizeof(arguments));
+    esp_err_t error = mp_confirmation_take(message->chat_id, id, s_confirm_tool,
+                                            sizeof(s_confirm_tool), s_confirm_arguments,
+                                            sizeof(s_confirm_arguments));
     if (error != ESP_OK) {
         send_reply(message->chat_id, "Permission not found or expired.");
         return;
@@ -308,7 +316,8 @@ static void execute_confirmation(const mp_message_t *message, uint32_t id)
     mp_tool_context_t context = {0};
     strlcpy(context.chat_id, message->chat_id, sizeof(context.chat_id));
     s_tool_output[0] = 0;
-    error = mp_tools_execute(tool, arguments, &context, true, s_tool_output, sizeof(s_tool_output));
+    error = mp_tools_execute(s_confirm_tool, s_confirm_arguments, &context, true,
+                             s_tool_output, sizeof(s_tool_output));
     send_reply(message->chat_id, error == ESP_OK || s_tool_output[0] ? s_tool_output : esp_err_to_name(error));
 }
 

@@ -11,13 +11,13 @@
 
 typedef struct {
     mp_llm_result_t *result;
-    char line[4096];
+    char line[MP_TOOL_ARGS_LEN + 2048];
     size_t line_length;
     bool overflow;
 } sse_parser_t;
 
 EXT_RAM_BSS_ATTR static sse_parser_t s_parser;
-EXT_RAM_BSS_ATTR static char s_value[4096];
+EXT_RAM_BSS_ATTR static char s_value[MP_TOOL_ARGS_LEN];
 
 static void append_text(char *target, size_t size, const char *text);
 static bool provider(const mp_config_t *config, const char **url, bool *key_required);
