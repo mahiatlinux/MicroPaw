@@ -12,14 +12,14 @@ The current build targets the detected ESP32-S3 revision 0.2 with 16 MB flash, 8
 
 - Fixed-queue agent state machine with bounded Responses API streaming and serial tool execution
 - Telegram long polling with one configured owner chat
-- NVS-backed durable facts, recent conversation records and eight scheduled jobs
+- NVS-backed durable facts, eight session-scoped conversation records and eight scheduled jobs
 - One-time and repeating reminders with proactive Telegram delivery
 - Independent `allowed`, `permission` and `disabled` modes for email and Calendar
 - Direct DuckDuckGo Lite search with a small streaming HTML state machine
 - Replaceable search interface plus Wikipedia and arXiv providers
 - Direct, bounded page fetching with incremental HTML text extraction
 - Bounded RSS and Atom parsing
-- One shared HTTPS mutex, explicit connection lifetime and CA bundle validation
+- Independent HTTPS clients with explicit connection lifetimes and CA bundle validation
 - Bounded TOML configuration pushes over USB serial with one NVS commit
 - Build-time removal of Telegram, search, page fetch, Wikipedia, arXiv, RSS, Gmail and Calendar
 - Static task stacks, fixed work buffers and live heap and stack measurements
@@ -103,7 +103,7 @@ set llm_api_key OPENROUTER_KEY
 set llm_model openai/o4-mini
 ```
 
-OpenRouter Responses is stateless. MicroPaw therefore includes the bounded current-turn function calls and outputs in each follow-up request. The endpoint is beta and may change.
+OpenRouter Responses is stateless. MicroPaw therefore resends up to eight role-correct session records plus bounded current-turn function calls and outputs. The endpoint is beta and may change.
 
 A custom endpoint must implement the OpenAI Responses streaming and function-calling contract. Chat Completions compatibility alone is insufficient. Supply the complete HTTPS endpoint, including `/responses` if the service uses that path:
 
