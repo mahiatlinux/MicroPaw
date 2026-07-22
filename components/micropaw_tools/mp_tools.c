@@ -70,6 +70,7 @@ static esp_err_t web_fetch(const char *arguments, const mp_tool_context_t *conte
 static esp_err_t rss_read(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 #if CONFIG_MICROPAW_GMAIL
 static esp_err_t email_send(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t email_schedule(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 #endif
 #if CONFIG_MICROPAW_CALENDAR
 static esp_err_t calendar_create(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
@@ -79,6 +80,8 @@ bool mp_tools_json(char *output, size_t size);
 esp_err_t mp_tools_execute(const char *name, const char *arguments,
                            const mp_tool_context_t *context, bool confirmed,
                            char *output, size_t size);
+esp_err_t mp_tools_execute_scheduled(const char *text, const mp_tool_context_t *context,
+                                     char *output, size_t size);
 
 static const tool_t s_tools[] = {
     {"memory_save", "{\"type\":\"function\",\"name\":\"memory_save\",\"description\":\"Save one durable fact for later conversations.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"note\":{\"type\":\"string\"}},\"required\":[\"note\"],\"additionalProperties\":false}}", memory_save},
@@ -99,9 +102,10 @@ static const tool_t s_tools[] = {
 #endif
 #if CONFIG_MICROPAW_GMAIL
     {"email_send", "{\"type\":\"function\",\"name\":\"email_send\",\"description\":\"Send a plain-text email through Gmail.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"to\",\"subject\",\"body\"],\"additionalProperties\":false}}", email_send},
+    {"email_schedule", "{\"type\":\"function\",\"name\":\"email_schedule\",\"description\":\"Schedule an exact plain-text Gmail email. Use this instead of schedule_add for delayed email. The current email permission is checked when it is due.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"}},\"required\":[\"to\",\"subject\",\"body\",\"delay_seconds\"],\"additionalProperties\":false}}", email_schedule},
 #endif
 #if CONFIG_MICROPAW_CALENDAR
-    {"calendar_create", "{\"type\":\"function\",\"name\":\"calendar_create\",\"description\":\"Create a Google Calendar event.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"start_rfc3339\":{\"type\":\"string\"},\"end_rfc3339\":{\"type\":\"string\"}},\"required\":[\"summary\",\"start_rfc3339\",\"end_rfc3339\"],\"additionalProperties\":false}}", calendar_create},
+    {"calendar_create", "{\"type\":\"function\",\"name\":\"calendar_create\",\"description\":\"Create a Google Calendar event. Call time_now before resolving relative or partial dates. Never guess a missing month or year.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"start_rfc3339\":{\"type\":\"string\"},\"end_rfc3339\":{\"type\":\"string\"}},\"required\":[\"summary\",\"start_rfc3339\",\"end_rfc3339\"],\"additionalProperties\":false}}", calendar_create},
 #endif
 };
 
@@ -122,6 +126,9 @@ static tool_mode_t tool_mode(const tool_t *tool)
 #if CONFIG_MICROPAW_GMAIL
     if (tool->execute == email_send) {
         return permission_mode(config->email_permission);
+    }
+    if (tool->execute == email_schedule && strcmp(config->email_permission, "disabled") == 0) {
+        return TOOL_DISABLED;
     }
 #endif
 #if CONFIG_MICROPAW_CALENDAR
@@ -264,6 +271,36 @@ static esp_err_t email_send(const char *arguments, const mp_tool_context_t *cont
     };
     return mp_email_service()->send(&email, output, size);
 }
+
+static esp_err_t email_schedule(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    uint32_t delay;
+    uint32_t id;
+    if (!json_string(arguments, "to", s_arg3, sizeof(s_arg3)) ||
+        !json_string(arguments, "subject", s_arg2, sizeof(s_arg2)) ||
+        !json_string(arguments, "body", s_arg1, sizeof(s_arg1)) ||
+        !json_uint(arguments, "delay_seconds", &delay) || delay == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    mp_writer_t writer;
+    mp_writer_init(&writer, output, size);
+    mp_writer_raw(&writer, "email_send:");
+    mp_writer_raw(&writer, "{\"to\":");
+    mp_writer_string(&writer, s_arg3);
+    mp_writer_raw(&writer, ",\"subject\":");
+    mp_writer_string(&writer, s_arg2);
+    mp_writer_raw(&writer, ",\"body\":");
+    mp_writer_string(&writer, s_arg1);
+    mp_writer_char(&writer, '}');
+    if (!writer.valid || writer.length >= MP_SCHEDULE_TEXT_LEN) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    esp_err_t error = mp_scheduler_add(context->chat_id, output, delay, 0, &id);
+    if (error == ESP_OK) {
+        snprintf(output, size, "Scheduled email job %lu.", (unsigned long)id);
+    }
+    return error;
+}
 #endif
 
 #if CONFIG_MICROPAW_CALENDAR
@@ -343,4 +380,21 @@ esp_err_t mp_tools_execute(const char *name, const char *arguments,
         return ESP_ERR_INVALID_ARG;
     }
     return tool->execute(arguments, context, output, size);
+}
+
+esp_err_t mp_tools_execute_scheduled(const char *text, const mp_tool_context_t *context,
+                                     char *output, size_t size)
+{
+#if CONFIG_MICROPAW_GMAIL
+    static const char prefix[] = "email_send:";
+    if (strncmp(text, prefix, sizeof(prefix) - 1) == 0) {
+        return mp_tools_execute("email_send", text + sizeof(prefix) - 1, context, false, output, size);
+    }
+#else
+    (void)text;
+    (void)context;
+    (void)output;
+    (void)size;
+#endif
+    return ESP_ERR_NOT_FOUND;
 }

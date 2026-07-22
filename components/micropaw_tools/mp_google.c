@@ -18,17 +18,33 @@ EXT_RAM_BSS_ATTR static char s_request_body[4096];
 EXT_RAM_BSS_ATTR static char s_response[2048];
 static time_t s_token_expiry;
 
-static esp_err_t google_token(const char **token);
+static void google_error(char *output, size_t size, int status);
+static esp_err_t google_token(const char **token, char *output, size_t size);
 static esp_err_t google_email(const mp_email_t *email, char *output, size_t size);
 static esp_err_t google_calendar(const mp_calendar_event_t *event, char *output, size_t size);
-static esp_err_t google_post(const char *url, const char *body, int *status);
+static esp_err_t google_post(const char *url, const char *body, int *status, char *output, size_t size);
 const mp_email_service_t *mp_email_service(void);
 const mp_calendar_service_t *mp_calendar_service(void);
 
 static const mp_email_service_t s_email = {"gmail", google_email};
 static const mp_calendar_service_t s_calendar = {"google_calendar", google_calendar};
 
-static esp_err_t google_token(const char **token)
+static void google_error(char *output, size_t size, int status)
+{
+    const char *error;
+    size_t length;
+    size_t response_length = strlen(s_response);
+    if (mp_json_get_string(s_response, response_length, "error_description", output, size)) {
+        return;
+    }
+    if (mp_json_get_slice(s_response, response_length, "error", &error, &length) &&
+        mp_json_get_string(error, length, "message", output, size)) {
+        return;
+    }
+    snprintf(output, size, "Google HTTP status %d.", status);
+}
+
+static esp_err_t google_token(const char **token, char *output, size_t size)
 {
     time_t now = time(NULL);
     if (s_token[0] && now + 60 < s_token_expiry) {
@@ -66,9 +82,12 @@ static esp_err_t google_token(const char **token)
         .timeout_ms = 20000,
         .accepted_content_types = "application/json"
     };
-    mp_http_response_t response;
+    mp_http_response_t response = {0};
     esp_err_t error = mp_http_collect(&request, s_response, sizeof(s_response), &response);
     if (error != ESP_OK || response.status != 200) {
+        if (error == ESP_OK) {
+            google_error(output, size, response.status);
+        }
         return error == ESP_OK ? ESP_ERR_INVALID_RESPONSE : error;
     }
     int64_t expires = 3000;
@@ -115,7 +134,8 @@ static esp_err_t google_email(const mp_email_t *email, char *output, size_t size
     mp_writer_char(&writer, '}');
     int status = 0;
     esp_err_t error = writer.valid ? google_post(
-        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", s_request_body, &status) : ESP_ERR_INVALID_SIZE;
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", s_request_body, &status,
+        output, size) : ESP_ERR_INVALID_SIZE;
     if (error == ESP_OK && status == 200) {
         strlcpy(output, "Email sent.", size);
         return ESP_OK;
@@ -139,7 +159,8 @@ static esp_err_t google_calendar(const mp_calendar_event_t *event, char *output,
     mp_writer_raw(&writer, "}}");
     int status = 0;
     esp_err_t error = writer.valid ? google_post(
-        "https://www.googleapis.com/calendar/v3/calendars/primary/events", s_request_body, &status) : ESP_ERR_INVALID_SIZE;
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events", s_request_body, &status,
+        output, size) : ESP_ERR_INVALID_SIZE;
     if (error == ESP_OK && status == 200) {
         strlcpy(output, "Calendar event created.", size);
         return ESP_OK;
@@ -147,10 +168,10 @@ static esp_err_t google_calendar(const mp_calendar_event_t *event, char *output,
     return error == ESP_OK ? ESP_ERR_INVALID_RESPONSE : error;
 }
 
-static esp_err_t google_post(const char *url, const char *body, int *status)
+static esp_err_t google_post(const char *url, const char *body, int *status, char *output, size_t size)
 {
     const char *token;
-    esp_err_t error = google_token(&token);
+    esp_err_t error = google_token(&token, output, size);
     if (error != ESP_OK) {
         return error;
     }
@@ -171,9 +192,12 @@ static esp_err_t google_post(const char *url, const char *body, int *status)
         .timeout_ms = 20000,
         .accepted_content_types = "application/json"
     };
-    mp_http_response_t response;
+    mp_http_response_t response = {0};
     error = mp_http_collect(&request, s_response, sizeof(s_response), &response);
     *status = response.status;
+    if (error == ESP_OK && response.status != 200) {
+        google_error(output, size, response.status);
+    }
     return error;
 }
 
