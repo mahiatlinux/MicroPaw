@@ -44,6 +44,7 @@ static void scheduler_task(void *argument);
 static void scheduler_check(void);
 esp_err_t mp_scheduler_init(mp_schedule_emit_fn emit);
 esp_err_t mp_scheduler_start(void);
+esp_err_t mp_scheduler_reset(void);
 esp_err_t mp_scheduler_add(const char *chat_id, const char *text, uint32_t delay_seconds,
                            uint32_t repeat_seconds, uint32_t *id);
 esp_err_t mp_scheduler_delete(uint32_t id);
@@ -157,6 +158,17 @@ esp_err_t mp_scheduler_start(void)
         mp_metrics_register("scheduler", s_task);
     }
     return s_task ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+esp_err_t mp_scheduler_reset(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    memset(&s_store, 0, sizeof(s_store));
+    s_store.magic = SCHEDULE_MAGIC;
+    s_store.next_id = 1;
+    esp_err_t error = save_store();
+    xSemaphoreGive(s_lock);
+    return error;
 }
 
 esp_err_t mp_scheduler_add(const char *chat_id, const char *text, uint32_t delay_seconds,

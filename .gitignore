@@ -7,3 +7,4 @@ reports/*.log
 reports/*.txt
 secrets/
 workspace/
+**/.DS_Store
