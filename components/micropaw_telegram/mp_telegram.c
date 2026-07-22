@@ -10,6 +10,7 @@
 #include "mp_json.h"
 #include "mp_metrics.h"
 #include "mp_net.h"
+#include "mp_wifi.h"
 #include "sdkconfig.h"
 
 #include "freertos/semphr.h"
@@ -39,6 +40,9 @@ static void telegram_task(void *argument)
 {
     (void)argument;
     while (true) {
+        if (!mp_wifi_wait(portMAX_DELAY)) {
+            continue;
+        }
         esp_err_t error = poll_once();
         if (error != ESP_OK) {
             ESP_LOGW(TAG, "poll: %s", esp_err_to_name(error));
