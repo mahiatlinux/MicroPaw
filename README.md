@@ -41,6 +41,8 @@ python scripts/push_config.py PORT secrets/credentials.toml --reboot
 
 The TOML file stays on the computer. `allowed` runs Gmail or Calendar actions immediately, `permission` asks through Telegram, and `disabled` turns the tool off.
 
+The agent can run eight sequential tool calls per turn. Kconfig can set the limit from 1 to 12.
+
 Google OAuth needs these scopes in one offline grant:
 
 ```text

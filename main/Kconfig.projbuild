@@ -40,9 +40,9 @@ config MICROPAW_LLM_MODEL
     default "gpt-5.6-luna"
 
 config MICROPAW_MAX_TOOL_ROUNDS
-    int "Maximum tool rounds"
-    range 1 8
-    default 4
+    int "Maximum tool calls per turn"
+    range 1 12
+    default 8
 
 config MICROPAW_LLM_STREAM_LIMIT
     int "Inference stream byte limit"

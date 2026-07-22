@@ -172,18 +172,24 @@ static bool ddg_chunk(const uint8_t *data, size_t size, void *context)
 static esp_err_t ddg_search(const char *query, mp_search_result_t *results, size_t *count)
 {
     char encoded[768];
-    char url[896];
+    char body[770];
     mp_url_encode(query, encoded, sizeof(encoded));
-    snprintf(url, sizeof(url), "https://lite.duckduckgo.com/lite/?q=%s", encoded);
+    int body_length = snprintf(body, sizeof(body), "q=%s", encoded);
+    if (body_length < 0 || (size_t)body_length >= sizeof(body)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
     mp_http_header_t headers[] = {
         {"Accept", "text/html"},
-        {"User-Agent", "MicroPaw/0.1 ESP32"}
+        {"User-Agent", "MicroPaw/0.1 ESP32"},
+        {"Content-Type", "application/x-www-form-urlencoded"}
     };
     mp_http_request_t request = {
-        .url = url,
-        .method = HTTP_METHOD_GET,
+        .url = "https://lite.duckduckgo.com/lite/",
+        .method = HTTP_METHOD_POST,
         .headers = headers,
         .header_count = sizeof(headers) / sizeof(headers[0]),
+        .body = body,
+        .body_size = body_length,
         .response_limit = CONFIG_MICROPAW_SEARCH_DOWNLOAD_LIMIT,
         .timeout_ms = 20000,
         .accepted_content_types = "text/html,application/xhtml+xml"

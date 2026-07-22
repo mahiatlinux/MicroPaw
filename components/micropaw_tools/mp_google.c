@@ -12,9 +12,9 @@
 
 EXT_RAM_BSS_ATTR static char s_token[1536];
 EXT_RAM_BSS_ATTR static char s_refresh_body[1024];
-EXT_RAM_BSS_ATTR static char s_raw_email[2560];
-EXT_RAM_BSS_ATTR static char s_encoded_email[3584];
-EXT_RAM_BSS_ATTR static char s_request_body[4096];
+EXT_RAM_BSS_ATTR static char s_raw_email[5120];
+EXT_RAM_BSS_ATTR static char s_encoded_email[6912];
+EXT_RAM_BSS_ATTR static char s_request_body[7168];
 EXT_RAM_BSS_ATTR static char s_response[2048];
 static time_t s_token_expiry;
 

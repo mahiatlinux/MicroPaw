@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_timer.h"
 #include "mp_types.h"
 
@@ -15,7 +16,7 @@ typedef struct {
     bool active;
 } pending_confirmation_t;
 
-static pending_confirmation_t s_pending;
+EXT_RAM_BSS_ATTR static pending_confirmation_t s_pending;
 static uint32_t s_next_id = 1000;
 
 static void clear_pending(void);
