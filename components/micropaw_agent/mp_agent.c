@@ -11,6 +11,7 @@
 #include "mp_config.h"
 #include "mp_confirmation.h"
 #include "mp_context.h"
+#include "mp_display.h"
 #include "mp_json.h"
 #include "mp_llm.h"
 #include "mp_memory.h"
@@ -31,6 +32,13 @@ typedef struct {
     int64_t expires_us;
     char chat_id[MP_CHAT_ID_LEN];
 } reset_confirmation_t;
+
+enum {
+    READ_MEMORY = 1,
+    READ_SCHEDULE = 2,
+    READ_EMAIL = 4,
+    READ_CALENDAR = 8
+};
 
 EXT_RAM_BSS_ATTR static char s_request[MP_AGENT_REQUEST_LEN];
 EXT_RAM_BSS_ATTR static char s_instructions[AGENT_INSTRUCTIONS_LEN];
@@ -64,6 +72,10 @@ static bool build_instructions(bool proactive);
 static bool append_input_message(mp_writer_t *writer, const char *role,
                                  const char *text, const char *id);
 static bool build_request(const mp_message_t *message);
+static bool batch_needs_progress(const mp_llm_result_t *result);
+static const char *progress_fallback(const mp_llm_result_t *result);
+static uint8_t tool_read_bit(const char *name);
+static uint8_t tool_write_bit(const char *name);
 static bool append_progress(const mp_llm_result_t *result);
 static bool append_tool_exchange(const mp_llm_call_t *call, const char *output);
 static bool persist_turn(const mp_message_t *message, const mp_llm_result_t *final_result,
@@ -75,10 +87,11 @@ static void send_progress(const char *chat_id, const char *text);
 static void execute_confirmation(const mp_message_t *message, uint32_t id);
 static void ota_progress(const char *text, void *context);
 static esp_err_t submit_message(uint32_t schedule_id, const char *chat_id, const char *text,
-                                bool proactive, TickType_t timeout);
+                                bool proactive, TaskHandle_t waiter, TickType_t timeout);
 esp_err_t mp_agent_init(mp_send_fn send, mp_flush_fn flush, mp_finish_fn finish);
 esp_err_t mp_agent_start(void);
 esp_err_t mp_agent_submit(const char *chat_id, const char *text, bool proactive, TickType_t timeout);
+esp_err_t mp_agent_submit_wait(const char *chat_id, const char *text, bool proactive);
 esp_err_t mp_agent_submit_scheduled(uint32_t id, const char *chat_id, const char *text);
 void mp_agent_reset_confirmation(void);
 mp_agent_state_t mp_agent_state(void);
@@ -90,6 +103,7 @@ static void agent_task(void *argument)
     mp_message_t message;
     while (true) {
         if (xQueueReceive(s_queue, &message, portMAX_DELAY) == pdTRUE) {
+            mp_display_agent_begin();
             mp_metrics_request_begin(message.queued_us);
             bool success = process_message(&message);
             if (message.schedule_id) {
@@ -99,6 +113,10 @@ static void agent_task(void *argument)
                 }
             }
             s_state = MP_AGENT_IDLE;
+            mp_display_agent_end();
+            if (message.waiter) {
+                xTaskNotify(message.waiter, 1U, eSetValueWithOverwrite);
+            }
         }
     }
 }
@@ -139,6 +157,8 @@ static bool process_message(const mp_message_t *message)
         send_text(message->chat_id, "The request exceeded the device buffer.", true);
         return false;
     }
+    bool progress_sent = false;
+    uint8_t current_reads = 0;
     while (true) {
         s_state = MP_AGENT_INFERENCE;
         int64_t started = esp_timer_get_time();
@@ -153,11 +173,13 @@ static bool process_message(const mp_message_t *message)
             }
             return false;
         }
+        mp_display_filter_text(s_result.text);
+        s_result.text_length = strlen(s_result.text);
         if (!s_result.call_count) {
             s_state = MP_AGENT_RESPONSE;
             esp_err_t delivery = send_text(message->chat_id, s_result.text, true);
             if (message->proactive && delivery == ESP_OK && s_flush) {
-                delivery = s_flush(portMAX_DELAY);
+                delivery = s_flush(message->chat_id, portMAX_DELAY);
             }
             if (!message->proactive) {
                 size_t turn_size = 0;
@@ -169,6 +191,14 @@ static bool process_message(const mp_message_t *message)
             }
             return delivery == ESP_OK;
         }
+        bool needs_progress = batch_needs_progress(&s_result);
+        if (!needs_progress) {
+            s_result.text[0] = 0;
+            s_result.text_length = 0;
+        } else if (!s_result.text[0] && !progress_sent) {
+            strlcpy(s_result.text, progress_fallback(&s_result), sizeof(s_result.text));
+            s_result.text_length = strlen(s_result.text);
+        }
         if (s_result.text[0]) {
             send_progress(message->chat_id, s_result.text);
             if (!append_progress(&s_result)) {
@@ -176,6 +206,7 @@ static bool process_message(const mp_message_t *message)
                 send_text(message->chat_id, "The progress trace exceeded the device buffer.", true);
                 return false;
             }
+            progress_sent = true;
         }
         s_state = MP_AGENT_TOOL;
         mp_tool_context_t context = {0};
@@ -185,8 +216,19 @@ static bool process_message(const mp_message_t *message)
         while ((call = mp_llm_call_next(&s_result, &offset))) {
             s_tool_output[0] = 0;
             started = esp_timer_get_time();
-            error = mp_tools_execute(call->name, call->arguments, &context, false,
-                                     s_tool_output, sizeof(s_tool_output));
+            uint8_t write_bit = tool_write_bit(call->name);
+            if (write_bit && !(current_reads & write_bit)) {
+                error = ESP_ERR_INVALID_STATE;
+                strlcpy(s_tool_output,
+                        "Read the current matching state in this turn before changing it.",
+                        sizeof(s_tool_output));
+            } else {
+                error = mp_tools_execute(call->name, call->arguments, &context, false,
+                                         s_tool_output, sizeof(s_tool_output));
+                if (error == ESP_OK) {
+                    current_reads |= tool_read_bit(call->name);
+                }
+            }
             mp_metrics_tool(call->name,
                             (uint32_t)((esp_timer_get_time() - started) / 1000));
             if (error != ESP_OK && !s_tool_output[0]) {
@@ -299,7 +341,7 @@ static bool handle_command(const mp_message_t *message)
                   s_tool_output[0] ? s_tool_output : esp_err_to_name(error), true);
         if (error == ESP_OK) {
             if (s_flush) {
-                s_flush(pdMS_TO_TICKS(30000));
+                s_flush(message->chat_id, pdMS_TO_TICKS(30000));
             }
             vTaskDelay(pdMS_TO_TICKS(500));
             esp_restart();
@@ -324,7 +366,8 @@ static bool handle_command(const mp_message_t *message)
 static bool owner_message(const mp_message_t *message)
 {
     const char *owner = mp_config_get()->owner_chat_id;
-    return owner[0] && strcmp(message->chat_id, owner) == 0;
+    return (owner[0] && strcmp(message->chat_id, owner) == 0) ||
+           strncmp(message->chat_id, "ig:", 3) == 0;
 }
 
 static void reset_confirmation(void)
@@ -434,6 +477,116 @@ static bool build_request(const mp_message_t *message)
                      ",\"parallel_tool_calls\":true,\"stream\":true,\"store\":false,\"max_output_tokens\":%lu}",
                      strtoul(config->llm_max_output_tokens, NULL, 10));
     return writer.valid;
+}
+
+static bool batch_needs_progress(const mp_llm_result_t *result)
+{
+    size_t offset = 0;
+    const mp_llm_call_t *call;
+    while ((call = mp_llm_call_next(result, &offset))) {
+        if (strcmp(call->name, "time_now") != 0 &&
+            strcmp(call->name, "diagnostics") != 0 &&
+            strcmp(call->name, "email_schedule") != 0 &&
+            strncmp(call->name, "memory_", 7) != 0 &&
+            strncmp(call->name, "schedule_", 9) != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char *progress_fallback(const mp_llm_result_t *result)
+{
+    size_t offset = 0;
+    const mp_llm_call_t *selected = NULL;
+    const mp_llm_call_t *call;
+    while ((call = mp_llm_call_next(result, &offset))) {
+        if (!selected || strcmp(call->name, "time_now") != 0) {
+            selected = call;
+        }
+        if (strcmp(call->name, "time_now") != 0) {
+            break;
+        }
+    }
+    if (!selected || strcmp(selected->name, "time_now") == 0) {
+        return "I'll check the current time.";
+    }
+    if (strcmp(selected->name, "web_search") == 0) {
+        return "I'll search the web for that.";
+    }
+    if (strcmp(selected->name, "web_fetch") == 0 || strcmp(selected->name, "rss_read") == 0) {
+        return "I'll read that source.";
+    }
+    if (strcmp(selected->name, "email_search") == 0 ||
+        strcmp(selected->name, "email_get") == 0) {
+        return "I'll check your email.";
+    }
+    if (strncmp(selected->name, "email_", 6) == 0) {
+        return "I'll handle that email.";
+    }
+    if (strcmp(selected->name, "calendar_list") == 0 ||
+        strcmp(selected->name, "calendar_get") == 0) {
+        return "I'll check your calendar.";
+    }
+    if (strncmp(selected->name, "calendar_", 9) == 0) {
+        return "I'll update your calendar.";
+    }
+    if (strcmp(selected->name, "schedule_list") == 0) {
+        return "I'll check your reminders.";
+    }
+    if (strncmp(selected->name, "schedule_", 9) == 0) {
+        return "I'll update your reminders.";
+    }
+    if (strcmp(selected->name, "memory_list") == 0) {
+        return "I'll check what I remember.";
+    }
+    if (strcmp(selected->name, "memory_save") == 0) {
+        return "I'll remember that.";
+    }
+    if (strcmp(selected->name, "diagnostics") == 0) {
+        return "I'll check the device.";
+    }
+    return "I'll work on that now.";
+}
+
+static uint8_t tool_read_bit(const char *name)
+{
+    if (strcmp(name, "memory_list") == 0) {
+        return READ_MEMORY;
+    }
+    if (strcmp(name, "schedule_list") == 0) {
+        return READ_SCHEDULE;
+    }
+    if (strcmp(name, "email_search") == 0 || strcmp(name, "email_get") == 0) {
+        return READ_EMAIL;
+    }
+    if (strcmp(name, "calendar_list") == 0 || strcmp(name, "calendar_get") == 0) {
+        return READ_CALENDAR;
+    }
+    return 0;
+}
+
+static uint8_t tool_write_bit(const char *name)
+{
+    if (strcmp(name, "memory_save") == 0) {
+        return READ_MEMORY;
+    }
+    if (strcmp(name, "schedule_add") == 0 ||
+        strcmp(name, "schedule_delete") == 0 ||
+        strcmp(name, "email_schedule") == 0) {
+        return READ_SCHEDULE;
+    }
+    if (strcmp(name, "email_modify") == 0 ||
+        strcmp(name, "email_trash") == 0 ||
+        strcmp(name, "email_untrash") == 0) {
+        return READ_EMAIL;
+    }
+    if (strcmp(name, "calendar_create") == 0 ||
+        strcmp(name, "calendar_update") == 0 ||
+        strcmp(name, "calendar_delete") == 0) {
+        return READ_CALENDAR;
+    }
+    return 0;
 }
 
 static bool append_progress(const mp_llm_result_t *result)
@@ -569,6 +722,9 @@ static void compact_context(bool force)
 static esp_err_t send_text(const char *chat_id, const char *text, bool final)
 {
     esp_err_t error = ESP_OK;
+    if (final) {
+        mp_display_response_begin();
+    }
     if (s_send) {
         error = s_send(chat_id, text);
     }
@@ -644,17 +800,31 @@ esp_err_t mp_agent_start(void)
 
 esp_err_t mp_agent_submit(const char *chat_id, const char *text, bool proactive, TickType_t timeout)
 {
-    return submit_message(0, chat_id, text, proactive, timeout);
+    return submit_message(0, chat_id, text, proactive, NULL, timeout);
+}
+
+esp_err_t mp_agent_submit_wait(const char *chat_id, const char *text, bool proactive)
+{
+    uint32_t ignored;
+    xTaskNotifyWait(0, UINT32_MAX, &ignored, 0);
+    esp_err_t error = submit_message(0, chat_id, text, proactive,
+                                     xTaskGetCurrentTaskHandle(), portMAX_DELAY);
+    if (error != ESP_OK) {
+        return error;
+    }
+    uint32_t result;
+    return xTaskNotifyWait(0, UINT32_MAX, &result, portMAX_DELAY) == pdTRUE ?
+           ESP_OK : ESP_FAIL;
 }
 
 esp_err_t mp_agent_submit_scheduled(uint32_t id, const char *chat_id, const char *text)
 {
-    return id ? submit_message(id, chat_id, text, true, pdMS_TO_TICKS(100)) :
+    return id ? submit_message(id, chat_id, text, true, NULL, pdMS_TO_TICKS(100)) :
            ESP_ERR_INVALID_ARG;
 }
 
 static esp_err_t submit_message(uint32_t schedule_id, const char *chat_id, const char *text,
-                                bool proactive, TickType_t timeout)
+                                bool proactive, TaskHandle_t waiter, TickType_t timeout)
 {
     if (!s_queue || !chat_id || !text || strlen(chat_id) >= MP_CHAT_ID_LEN ||
         strlen(text) >= MP_MESSAGE_LEN) {
@@ -663,7 +833,8 @@ static esp_err_t submit_message(uint32_t schedule_id, const char *chat_id, const
     mp_message_t message = {
         .queued_us = esp_timer_get_time(),
         .schedule_id = schedule_id,
-        .proactive = proactive
+        .proactive = proactive,
+        .waiter = waiter
     };
     strlcpy(message.chat_id, chat_id, sizeof(message.chat_id));
     strlcpy(message.text, text, sizeof(message.text));

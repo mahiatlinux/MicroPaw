@@ -12,6 +12,8 @@
 #include "mp_config.h"
 #include "mp_confirmation.h"
 #include "mp_context.h"
+#include "mp_display.h"
+#include "mp_instagram.h"
 #include "mp_memory.h"
 #include "mp_metrics.h"
 #include "mp_ota.h"
@@ -28,7 +30,7 @@ EXT_RAM_BSS_ATTR static char s_config_toml[MP_CONFIG_TOML_MAX + 1];
 static const char *TAG = "micropaw";
 
 static esp_err_t send_output(const char *chat_id, const char *text);
-static esp_err_t flush_output(TickType_t timeout);
+static esp_err_t flush_output(const char *chat_id, TickType_t timeout);
 static void finish_output(const char *chat_id);
 static esp_err_t schedule_output(uint32_t id, const char *chat_id, const char *text);
 static esp_err_t setup_console(void);
@@ -40,6 +42,11 @@ void app_main(void);
 
 static esp_err_t send_output(const char *chat_id, const char *text)
 {
+#if CONFIG_MICROPAW_INSTAGRAM
+    if (mp_instagram_chat(chat_id)) {
+        return mp_instagram_send(chat_id, text);
+    }
+#endif
 #if CONFIG_MICROPAW_TELEGRAM
     const mp_config_t *config = mp_config_get();
     if (config->telegram_token[0] && strcmp(chat_id, "serial") != 0) {
@@ -50,13 +57,19 @@ static esp_err_t send_output(const char *chat_id, const char *text)
     return ESP_OK;
 }
 
-static esp_err_t flush_output(TickType_t timeout)
+static esp_err_t flush_output(const char *chat_id, TickType_t timeout)
 {
+#if CONFIG_MICROPAW_INSTAGRAM
+    if (mp_instagram_chat(chat_id)) {
+        return mp_instagram_flush(timeout);
+    }
+#endif
 #if CONFIG_MICROPAW_TELEGRAM
-    if (mp_config_get()->telegram_token[0]) {
+    if (mp_config_get()->telegram_token[0] && strcmp(chat_id, "serial") != 0) {
         return mp_telegram_flush(timeout);
     }
 #else
+    (void)chat_id;
     (void)timeout;
 #endif
     return ESP_OK;
@@ -64,12 +77,21 @@ static esp_err_t flush_output(TickType_t timeout)
 
 static void finish_output(const char *chat_id)
 {
+#if CONFIG_MICROPAW_INSTAGRAM
+    if (mp_instagram_chat(chat_id)) {
+        mp_display_response_end();
+        return;
+    }
+#endif
 #if CONFIG_MICROPAW_TELEGRAM
     if (mp_config_get()->telegram_token[0] && strcmp(chat_id, "serial") != 0) {
         mp_telegram_typing_stop(chat_id);
+    } else {
+        mp_display_response_end();
     }
 #else
     (void)chat_id;
+    mp_display_response_end();
 #endif
 }
 
@@ -207,12 +229,25 @@ static esp_err_t initialize(void)
         (error = mp_scheduler_start()) != ESP_OK) {
         return error;
     }
+    esp_err_t display_error = mp_display_start();
+    if (display_error != ESP_OK) {
+        ESP_LOGW(TAG, "OLED disabled at runtime: %s", esp_err_to_name(display_error));
+    }
     error = mp_wifi_start();
     if (error == ESP_OK) {
 #if CONFIG_MICROPAW_TELEGRAM
         esp_err_t telegram_error = mp_telegram_start();
         if (telegram_error != ESP_OK) {
             ESP_LOGW(TAG, "Telegram disabled at runtime: %s", esp_err_to_name(telegram_error));
+        }
+#endif
+#if CONFIG_MICROPAW_INSTAGRAM
+        if (strcmp(mp_config_get()->instagram_enabled, "true") == 0) {
+            esp_err_t instagram_error = mp_instagram_start();
+            if (instagram_error != ESP_OK) {
+                ESP_LOGW(TAG, "Instagram disabled at runtime: %s",
+                         esp_err_to_name(instagram_error));
+            }
         }
 #endif
     } else {

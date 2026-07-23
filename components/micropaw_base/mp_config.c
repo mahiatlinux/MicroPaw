@@ -35,9 +35,14 @@ static const config_field_t s_fields[] = {
     {"google_client_id", "google_id", offsetof(mp_config_t, google_client_id), sizeof(s_config.google_client_id), true},
     {"google_client_secret", "google_sec", offsetof(mp_config_t, google_client_secret), sizeof(s_config.google_client_secret), true},
     {"google_refresh_token", "google_ref", offsetof(mp_config_t, google_refresh_token), sizeof(s_config.google_refresh_token), true},
+    {"instagram_enabled", "instagram", offsetof(mp_config_t, instagram_enabled), sizeof(s_config.instagram_enabled), false},
+    {"zernio_api_key", "zernio_key", offsetof(mp_config_t, zernio_api_key), sizeof(s_config.zernio_api_key), true},
+    {"instagram_owner_username", "ig_owner", offsetof(mp_config_t, instagram_owner_username), sizeof(s_config.instagram_owner_username), false},
     {"email_permission", "email_perm", offsetof(mp_config_t, email_permission), sizeof(s_config.email_permission), false},
     {"calendar_permission", "calendar_perm", offsetof(mp_config_t, calendar_permission), sizeof(s_config.calendar_permission), false},
-    {"timezone", "timezone", offsetof(mp_config_t, timezone), sizeof(s_config.timezone), false}
+    {"timezone", "timezone", offsetof(mp_config_t, timezone), sizeof(s_config.timezone), false},
+    {"oled_enabled", "oled", offsetof(mp_config_t, oled_enabled), sizeof(s_config.oled_enabled), false},
+    {"oled_height", "oled_h", offsetof(mp_config_t, oled_height), sizeof(s_config.oled_height), false}
 };
 
 static void config_defaults(void);
@@ -47,7 +52,7 @@ static const char *const_field_value(const mp_config_t *config, const config_fie
 static int field_index(const char *name, size_t length);
 static bool valid_value(config_field_t field, const char *value);
 static bool parse_toml_string(const char **cursor, const char *end, char *output, size_t size);
-static esp_err_t parse_toml(const char *text, size_t length, uint16_t *present, size_t *error_line);
+static esp_err_t parse_toml(const char *text, size_t length, uint32_t *present, size_t *error_line);
 static esp_err_t load_value(nvs_handle_t handle, const config_field_t *field);
 static void append_field(char *output, size_t size, const config_field_t *field);
 esp_err_t mp_config_init(void);
@@ -66,7 +71,10 @@ static void config_defaults(void)
              CONFIG_MICROPAW_LLM_MAX_OUTPUT_TOKENS);
     strlcpy(s_config.email_permission, "permission", sizeof(s_config.email_permission));
     strlcpy(s_config.calendar_permission, "permission", sizeof(s_config.calendar_permission));
+    strlcpy(s_config.instagram_enabled, "false", sizeof(s_config.instagram_enabled));
     strlcpy(s_config.timezone, "UTC0", sizeof(s_config.timezone));
+    strlcpy(s_config.oled_enabled, "false", sizeof(s_config.oled_enabled));
+    strlcpy(s_config.oled_height, "64", sizeof(s_config.oled_height));
 }
 
 static size_t field_count(void)
@@ -119,6 +127,13 @@ static bool valid_value(config_field_t field, const char *value)
         return strcmp(value, "allowed") == 0 || strcmp(value, "permission") == 0 ||
                strcmp(value, "disabled") == 0;
     }
+    if (strcmp(field.name, "oled_enabled") == 0 ||
+        strcmp(field.name, "instagram_enabled") == 0) {
+        return strcmp(value, "true") == 0 || strcmp(value, "false") == 0;
+    }
+    if (strcmp(field.name, "oled_height") == 0) {
+        return strcmp(value, "32") == 0 || strcmp(value, "64") == 0;
+    }
     return true;
 }
 
@@ -152,7 +167,7 @@ static bool parse_toml_string(const char **cursor, const char *end, char *output
     return false;
 }
 
-static esp_err_t parse_toml(const char *text, size_t length, uint16_t *present, size_t *error_line)
+static esp_err_t parse_toml(const char *text, size_t length, uint32_t *present, size_t *error_line)
 {
     const char *cursor = text;
     const char *limit = text + length;
@@ -190,7 +205,26 @@ static esp_err_t parse_toml(const char *text, size_t length, uint16_t *present, 
                 value++;
             }
             char *destination = field_value(&s_import, &s_fields[index]);
-            if (!parse_toml_string(&value, line_end, destination, s_fields[index].size)) {
+            bool parsed;
+            if ((strcmp(s_fields[index].name, "oled_enabled") == 0 ||
+                 strcmp(s_fields[index].name, "instagram_enabled") == 0) &&
+                value < line_end && *value != '"' && *value != '\'') {
+                if (line_end - value >= 4 && strncmp(value, "true", 4) == 0) {
+                    strlcpy(destination, "true", s_fields[index].size);
+                    value += 4;
+                    parsed = true;
+                } else if (line_end - value >= 5 && strncmp(value, "false", 5) == 0) {
+                    strlcpy(destination, "false", s_fields[index].size);
+                    value += 5;
+                    parsed = true;
+                } else {
+                    parsed = false;
+                }
+            } else {
+                parsed = parse_toml_string(&value, line_end, destination,
+                                           s_fields[index].size);
+            }
+            if (!parsed) {
                 *error_line = line;
                 return ESP_ERR_INVALID_ARG;
             }
@@ -299,7 +333,7 @@ esp_err_t mp_config_import_toml(const char *text, size_t length, size_t *error_l
         return ESP_ERR_INVALID_ARG;
     }
     s_import = s_config;
-    uint16_t present;
+    uint32_t present;
     esp_err_t error = parse_toml(text, length, &present, error_line);
     if (error != ESP_OK) {
         memset(&s_import, 0, sizeof(s_import));

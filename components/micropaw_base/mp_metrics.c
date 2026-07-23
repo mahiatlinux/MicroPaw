@@ -58,7 +58,16 @@ void mp_metrics_log(void);
 
 void mp_metrics_register(const char *name, TaskHandle_t task)
 {
-    if (name && task && s_task_count < sizeof(s_tasks) / sizeof(s_tasks[0])) {
+    if (!name) {
+        return;
+    }
+    for (size_t index = 0; index < s_task_count; index++) {
+        if (strcmp(s_tasks[index].name, name) == 0) {
+            s_tasks[index].task = task;
+            return;
+        }
+    }
+    if (task && s_task_count < sizeof(s_tasks) / sizeof(s_tasks[0])) {
         s_tasks[s_task_count++] = (task_metric_t){name, task};
     }
 }
@@ -180,6 +189,9 @@ void mp_metrics_format(char *output, size_t size)
         return;
     }
     for (size_t index = 0; index < s_task_count; index++) {
+        if (!s_tasks[index].task) {
+            continue;
+        }
         size_t offset = strlen(output);
         if (offset < size) {
             snprintf(output + offset, size - offset, "stack_%s_min_free=%lu\n", s_tasks[index].name,

@@ -4,6 +4,10 @@ config MICROPAW_TELEGRAM
     bool "Telegram channel"
     default y
 
+config MICROPAW_INSTAGRAM
+    bool "Optional Instagram channel through Zernio"
+    default y
+
 config MICROPAW_WEB_SEARCH
     bool "DuckDuckGo Lite search"
     default y
@@ -69,6 +73,16 @@ config MICROPAW_TELEGRAM_SENDER_STACK
     range 4096 16384
     default 12288
 
+config MICROPAW_INSTAGRAM_STACK
+    int "Instagram task stack bytes"
+    range 4096 16384
+    default 8704
+
+config MICROPAW_INSTAGRAM_SENDER_STACK
+    int "Instagram sender task stack bytes"
+    range 4096 16384
+    default 8192
+
 config MICROPAW_SCHEDULER_STACK
     int "Scheduler task stack bytes"
     range 3072 8192
@@ -78,6 +92,11 @@ config MICROPAW_CLI_STACK
     int "Serial console task stack bytes"
     range 3072 8192
     default 5120
+
+config MICROPAW_DISPLAY_STACK
+    int "OLED display task stack bytes"
+    range 4096 8192
+    default 4352
 
 config MICROPAW_SEARCH_DOWNLOAD_LIMIT
     int "Search response byte limit"
