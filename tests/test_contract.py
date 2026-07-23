@@ -121,11 +121,13 @@ class FirmwareContractTest(unittest.TestCase):
         self.assertIn("espsecure verify-signature", workflow)
         self.assertIn("micropaw-usb.hex", workflow)
         self.assertIn("push_config.py", workflow)
+        self.assertIn("push_config.ps1", workflow)
         self.assertIn("sha256sum", workflow)
         self.assertIn("gh release create", workflow)
         self.assertIn("--verify-tag", workflow)
         self.assertIn("write-flash 0x0", source("scripts/install.sh"))
         self.assertIn("Get-FileHash", source("scripts/install.ps1"))
+        self.assertNotIn("import serial", source("scripts/push_config.py"))
         self.assertIn("CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y", defaults)
         self.assertIn("CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y", defaults)
 
