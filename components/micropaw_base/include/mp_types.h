@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
 
 #define MP_CHAT_ID_LEN 24
@@ -39,6 +40,7 @@ typedef struct {
     int64_t queued_us;
     uint32_t schedule_id;
     bool proactive;
+    TaskHandle_t waiter;
 } mp_message_t;
 
 typedef struct {
@@ -46,6 +48,6 @@ typedef struct {
 } mp_tool_context_t;
 
 typedef esp_err_t (*mp_send_fn)(const char *chat_id, const char *text);
-typedef esp_err_t (*mp_flush_fn)(TickType_t timeout);
+typedef esp_err_t (*mp_flush_fn)(const char *chat_id, TickType_t timeout);
 typedef void (*mp_finish_fn)(const char *chat_id);
 typedef esp_err_t (*mp_schedule_emit_fn)(uint32_t id, const char *chat_id, const char *text);

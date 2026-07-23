@@ -53,6 +53,8 @@ esp_err_t mp_scheduler_add(const char *chat_id, const char *text, uint32_t delay
                            uint32_t repeat_seconds, uint32_t *id, int64_t *next_epoch);
 esp_err_t mp_scheduler_delete(uint32_t id);
 esp_err_t mp_scheduler_complete(uint32_t id, bool success);
+size_t mp_scheduler_count(void);
+bool mp_scheduler_get(size_t index, mp_schedule_info_t *info, char *text, size_t text_size);
 void mp_scheduler_format(char *output, size_t size);
 
 static esp_err_t load_store(void)
@@ -259,6 +261,46 @@ esp_err_t mp_scheduler_complete(uint32_t id, bool success)
     }
     xSemaphoreGive(s_lock);
     return error;
+}
+
+size_t mp_scheduler_count(void)
+{
+    size_t count = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int index = 0; index < MP_SCHEDULE_SLOTS; index++) {
+        if (s_store.records[index].active) {
+            count++;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return count;
+}
+
+bool mp_scheduler_get(size_t index, mp_schedule_info_t *info, char *text, size_t text_size)
+{
+    if (!info || !text || !text_size) {
+        return false;
+    }
+    bool found = false;
+    size_t current = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int slot = 0; slot < MP_SCHEDULE_SLOTS; slot++) {
+        schedule_record_t *record = &s_store.records[slot];
+        if (!record->active) {
+            continue;
+        }
+        if (current++ == index) {
+            info->id = record->id;
+            info->next_epoch = record->next_epoch;
+            info->repeat_seconds = record->repeat_seconds;
+            info->running = s_inflight[slot];
+            strlcpy(text, record->text, text_size);
+            found = true;
+            break;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return found;
 }
 
 void mp_scheduler_format(char *output, size_t size)

@@ -47,9 +47,14 @@ llm_max_output_tokens = "32768"
 google_client_id = "CLIENT_ID"
 google_client_secret = "CLIENT_SECRET"
 google_refresh_token = "REFRESH_TOKEN"
+instagram_enabled = false
+zernio_api_key = "API_KEY"
+instagram_owner_username = "OWNER_USERNAME"
 email_permission = "permission"
 calendar_permission = "permission"
 timezone = "NZST-12NZDT,M9.5.0,M4.1.0/3"
+oled_enabled = false
+oled_height = "64"
 ```
 
 After the first flash, download the configuration tool and push the TOML file over USB. On macOS or Linux:
@@ -65,6 +70,14 @@ $push = [scriptblock]::Create((irm https://github.com/mahiatlinux/MicroPaw/relea
 ```
 
 The uploaders use only Python's standard library on macOS and Linux, and built-in PowerShell APIs on Windows. They find the port when one matching device is connected; use `--port PORT` or `-Port PORT` when needed. The TOML file stays on the computer. `allowed` runs Gmail or Calendar actions immediately, `permission` asks through Telegram, and `disabled` turns the tool off.
+
+Instagram through [Zernio](https://zernio.com/) is optional and disabled by default. Telegram-only installs do not need a Zernio account. To turn it on, connect an Instagram Business or Creator account to Zernio and create a read-write API key limited to that profile. Send the connected account one DM from the owner account so Zernio can see the conversation. Set `instagram_enabled = true`, add the key, and set `instagram_owner_username` to the owner's username without `@`. Push the TOML again and reboot.
+
+The first matching DM binds that username to its Instagram participant ID on the device. Other accounts are ignored. Instagram uses the same Luna context, progress messages, tools, permissions and scheduled-job delivery as Telegram. Instagram does not expose a typing action through this API, so the progress message is the first visible response on longer work.
+
+Instagram is slower. Zernio adds another service in both directions, and the ESP must poll its 60-request-per-minute free API. Replies can take several seconds longer. A Zernio delay or outage also stops Instagram delivery, so Telegram is the recommended primary interface.
+
+Set `oled_enabled = true` for a 128×32 or 128×64 SSD1306 I2C OLED wired to SDA GPIO8 and SCL GPIO9. Set `oled_height` to match the panel. Click BOOT on the face to open jobs, then click to move through their pages. Hold BOOT on the jobs screen to return to the face. Hold it on the face to turn the OLED off, then hold it again to restart it.
 
 The agent has no fixed tool-call or page-count limit. Gmail and Calendar listings return numbered pages of up to 20 records with a continuation token. The agent can keep paging until the task is done. Device request capacity and external API limits still apply.
 
@@ -87,7 +100,7 @@ An existing refresh token created with only `gmail.send` must be replaced after 
 
 ## Commands
 
-`/help` lists Telegram commands.
+`/help` lists chat commands.
 
 `/metrics` reports request, inference, tool, context, delivery and HTTP timings without message content.
 

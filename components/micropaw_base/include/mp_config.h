@@ -20,9 +20,14 @@ typedef struct {
     char google_client_id[128];
     char google_client_secret[96];
     char google_refresh_token[256];
+    char instagram_enabled[6];
+    char zernio_api_key[96];
+    char instagram_owner_username[32];
     char email_permission[11];
     char calendar_permission[11];
     char timezone[64];
+    char oled_enabled[6];
+    char oled_height[3];
 } mp_config_t;
 
 esp_err_t mp_config_init(void);
