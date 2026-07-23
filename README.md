@@ -22,7 +22,7 @@ In PowerShell, run:
 irm https://github.com/mahiatlinux/MicroPaw/releases/latest/download/install.ps1 | iex
 ```
 
-The installer needs Python 3.10 or newer. It downloads the latest signed release, checks its SHA-256 hash, installs esptool, finds the connected ESP32-S3 and flashes it. Existing credentials, memory, jobs and conversation context stay intact. Set `MICROPAW_PORT` when more than one serial device is connected. If automatic reset fails, hold BOOT while the installer starts.
+The installer needs Python 3.10 or newer. It downloads the latest signed release, checks its SHA-256 hash, runs esptool in a temporary environment, finds the connected ESP32-S3 and flashes it. Existing credentials, memory, jobs and conversation context stay intact. Set `MICROPAW_PORT` when more than one serial device is connected. If automatic reset fails, hold BOOT while the installer starts.
 
 ## Build
 
