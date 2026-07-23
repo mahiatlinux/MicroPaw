@@ -45,6 +45,7 @@ typedef enum {
 
 EXT_RAM_BSS_ATTR static char s_arg1[CONFIG_MICROPAW_WORK_TEXT_BYTES];
 EXT_RAM_BSS_ATTR static char s_arg3[1024];
+EXT_RAM_BSS_ATTR static char s_catalog[32768];
 #if CONFIG_MICROPAW_GMAIL || CONFIG_MICROPAW_CALENDAR
 EXT_RAM_BSS_ATTR static char s_arg2[512];
 EXT_RAM_BSS_ATTR static char s_arg4[128];
@@ -55,6 +56,7 @@ EXT_RAM_BSS_ATTR static char s_arg5[128];
 
 static bool json_string(const char *json, const char *name, char *output, size_t size);
 static bool json_uint(const char *json, const char *name, uint32_t *value);
+static bool build_catalog(char *output, size_t size);
 static tool_mode_t permission_mode(const char *permission);
 static tool_mode_t tool_mode(const tool_t *tool);
 static esp_err_t memory_save(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
@@ -85,6 +87,7 @@ static esp_err_t calendar_delete(const char *arguments, const mp_tool_context_t 
 #endif
 esp_err_t mp_tools_init(void);
 bool mp_tools_json(char *output, size_t size);
+const char *mp_tools_catalog(void);
 esp_err_t mp_tools_execute(const char *name, const char *arguments,
                            const mp_tool_context_t *context, bool confirmed,
                            char *output, size_t size);
@@ -443,10 +446,10 @@ static esp_err_t calendar_delete(const char *arguments, const mp_tool_context_t 
 
 esp_err_t mp_tools_init(void)
 {
-    return ESP_OK;
+    return build_catalog(s_catalog, sizeof(s_catalog)) ? ESP_OK : ESP_ERR_INVALID_SIZE;
 }
 
-bool mp_tools_json(char *output, size_t size)
+static bool build_catalog(char *output, size_t size)
 {
     mp_writer_t writer;
     mp_writer_init(&writer, output, size);
@@ -464,6 +467,21 @@ bool mp_tools_json(char *output, size_t size)
     }
     mp_writer_char(&writer, ']');
     return writer.valid;
+}
+
+bool mp_tools_json(char *output, size_t size)
+{
+    size_t length = strlen(s_catalog);
+    if (!output || !s_catalog[0] || length >= size) {
+        return false;
+    }
+    memcpy(output, s_catalog, length + 1);
+    return true;
+}
+
+const char *mp_tools_catalog(void)
+{
+    return s_catalog;
 }
 
 esp_err_t mp_tools_execute(const char *name, const char *arguments,

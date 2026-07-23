@@ -5,6 +5,7 @@
 
 #include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "mp_agent.h"
 #include "mp_config.h"
 #include "mp_json.h"
@@ -13,28 +14,68 @@
 #include "mp_wifi.h"
 #include "sdkconfig.h"
 
+#include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 
+#define OUTBOUND_QUEUE_LENGTH 4
+#define OUTBOUND_IDLE BIT0
+
+typedef enum {
+    OUTBOUND_TEXT,
+    OUTBOUND_TYPING_START,
+    OUTBOUND_TYPING_STOP
+} outbound_type_t;
+
+typedef struct {
+    outbound_type_t type;
+    uint16_t text_length;
+    int64_t queued_us;
+    char chat_id[MP_CHAT_ID_LEN];
+    char text[3901];
+} outbound_item_t;
+
 EXT_RAM_BSS_ATTR static char s_poll_response[6144];
-EXT_RAM_BSS_ATTR static char s_body[4608];
-EXT_RAM_BSS_ATTR static char s_part[3901];
 EXT_RAM_BSS_ATTR static char s_message[MP_MESSAGE_LEN];
-static StaticSemaphore_t s_send_lock_buffer;
-static SemaphoreHandle_t s_send_lock;
+EXT_RAM_BSS_ATTR static char s_body[24576];
+EXT_RAM_BSS_ATTR static char s_part[3901];
+EXT_RAM_BSS_ATTR static outbound_item_t s_enqueue;
+EXT_RAM_BSS_ATTR static outbound_item_t s_current;
+EXT_RAM_BSS_ATTR static uint8_t s_outbound_storage[OUTBOUND_QUEUE_LENGTH *
+                                                   sizeof(outbound_item_t)];
+static StaticQueue_t s_outbound_queue_buffer;
+static QueueHandle_t s_outbound_queue;
+static StaticSemaphore_t s_enqueue_mutex_buffer;
+static SemaphoreHandle_t s_enqueue_mutex;
+static StaticEventGroup_t s_outbound_event_buffer;
+static EventGroupHandle_t s_outbound_event;
 static StaticTask_t s_task_buffer;
 static StackType_t s_task_stack[CONFIG_MICROPAW_TELEGRAM_STACK];
 static TaskHandle_t s_task;
+static StaticTask_t s_sender_task_buffer;
+static StackType_t s_sender_task_stack[CONFIG_MICROPAW_TELEGRAM_SENDER_STACK];
+static TaskHandle_t s_sender_task;
+static mp_http_session_t s_poll_session;
+static mp_http_session_t s_sender_session;
 static int64_t s_offset;
 static const char *TAG = "telegram";
 
 static void telegram_task(void *argument);
+static void sender_task(void *argument);
 static esp_err_t poll_once(void);
 static void process_update(const char *update, size_t length);
-static size_t utf8_chunk(const char *text, size_t limit);
+static size_t utf8_chunk(const char *text, size_t length, size_t limit);
+static esp_err_t send_request(const char *method, const char *chat_id,
+                              const char *text, size_t length);
 static esp_err_t send_chunk(const char *chat_id, const char *text, size_t length);
+static esp_err_t send_typing(const char *chat_id);
+static esp_err_t queue_item(TickType_t timeout);
 esp_err_t mp_telegram_start(void);
 esp_err_t mp_telegram_send(const char *chat_id, const char *text);
+esp_err_t mp_telegram_typing_start(const char *chat_id, int64_t queued_us);
+void mp_telegram_typing_stop(const char *chat_id);
+esp_err_t mp_telegram_flush(TickType_t timeout);
 TaskHandle_t mp_telegram_task_handle(void);
+TaskHandle_t mp_telegram_sender_task_handle(void);
 
 static void telegram_task(void *argument)
 {
@@ -51,6 +92,44 @@ static void telegram_task(void *argument)
     }
 }
 
+static void sender_task(void *argument)
+{
+    (void)argument;
+    bool typing = false;
+    char typing_chat[MP_CHAT_ID_LEN] = "";
+    while (true) {
+        TickType_t timeout = typing ? pdMS_TO_TICKS(4000) : portMAX_DELAY;
+        if (xQueueReceive(s_outbound_queue, &s_current, timeout) == pdTRUE) {
+            if (s_current.type == OUTBOUND_TYPING_START) {
+                typing = true;
+                strlcpy(typing_chat, s_current.chat_id, sizeof(typing_chat));
+                mp_metrics_typing(s_current.queued_us);
+                if (mp_wifi_wait(portMAX_DELAY)) {
+                    send_typing(typing_chat);
+                }
+            } else if (s_current.type == OUTBOUND_TYPING_STOP) {
+                if (strcmp(typing_chat, s_current.chat_id) == 0) {
+                    typing = false;
+                    typing_chat[0] = 0;
+                }
+            } else if (mp_wifi_wait(portMAX_DELAY)) {
+                esp_err_t error = send_chunk(s_current.chat_id, s_current.text,
+                                             s_current.text_length);
+                mp_metrics_delivery(
+                    (uint32_t)((esp_timer_get_time() - s_current.queued_us) / 1000));
+                if (error != ESP_OK) {
+                    ESP_LOGW(TAG, "send: %s", esp_err_to_name(error));
+                }
+            }
+            if (uxQueueMessagesWaiting(s_outbound_queue) == 0) {
+                xEventGroupSetBits(s_outbound_event, OUTBOUND_IDLE);
+            }
+        } else if (typing && mp_wifi_wait(0)) {
+            send_typing(typing_chat);
+        }
+    }
+}
+
 static esp_err_t poll_once(void)
 {
     const mp_config_t *config = mp_config_get();
@@ -63,10 +142,12 @@ static esp_err_t poll_once(void)
         .method = HTTP_METHOD_GET,
         .response_limit = sizeof(s_poll_response) - 1,
         .timeout_ms = 20000,
+        .buffer_size = 1024,
         .accepted_content_types = "application/json"
     };
     mp_http_response_t response;
-    esp_err_t error = mp_http_collect(&request, s_poll_response, sizeof(s_poll_response), &response);
+    esp_err_t error = mp_http_session_collect(&s_poll_session, &request, s_poll_response,
+                                              sizeof(s_poll_response), &response);
     if (error != ESP_OK || response.status != 200) {
         return error == ESP_OK ? ESP_ERR_INVALID_RESPONSE : error;
     }
@@ -110,16 +191,19 @@ static void process_update(const char *update, size_t length)
     }
     if (!mp_json_get_string(message, message_length, "text", s_message, sizeof(s_message))) {
         mp_telegram_send(id, "Message too long for the device input buffer.");
+        mp_telegram_typing_stop(id);
         return;
     }
+    int64_t queued_us = esp_timer_get_time();
+    mp_telegram_typing_start(id, queued_us);
     if (mp_agent_submit(id, s_message, false, 0) != ESP_OK) {
         mp_telegram_send(id, "MicroPaw is busy. Try again shortly.");
+        mp_telegram_typing_stop(id);
     }
 }
 
-static size_t utf8_chunk(const char *text, size_t limit)
+static size_t utf8_chunk(const char *text, size_t length, size_t limit)
 {
-    size_t length = strlen(text);
     if (length <= limit) {
         return length;
     }
@@ -135,23 +219,29 @@ static size_t utf8_chunk(const char *text, size_t limit)
     return split;
 }
 
-static esp_err_t send_chunk(const char *chat_id, const char *text, size_t length)
+static esp_err_t send_request(const char *method, const char *chat_id,
+                              const char *text, size_t length)
 {
     const mp_config_t *config = mp_config_get();
-    memcpy(s_part, text, length);
-    s_part[length] = 0;
     mp_writer_t writer;
     mp_writer_init(&writer, s_body, sizeof(s_body));
     mp_writer_raw(&writer, "{\"chat_id\":");
     mp_writer_string(&writer, chat_id);
-    mp_writer_raw(&writer, ",\"text\":");
-    mp_writer_string(&writer, s_part);
+    if (text) {
+        memcpy(s_part, text, length);
+        s_part[length] = 0;
+        mp_writer_raw(&writer, ",\"text\":");
+        mp_writer_string(&writer, s_part);
+    } else {
+        mp_writer_raw(&writer, ",\"action\":\"typing\"");
+    }
     mp_writer_char(&writer, '}');
     if (!writer.valid) {
         return ESP_ERR_INVALID_SIZE;
     }
     char url[192];
-    snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/sendMessage", config->telegram_token);
+    snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/%s",
+             config->telegram_token, method);
     mp_http_header_t headers[] = {{"Content-Type", "application/json"}};
     mp_http_request_t request = {
         .url = url,
@@ -162,12 +252,35 @@ static esp_err_t send_chunk(const char *chat_id, const char *text, size_t length
         .body_size = writer.length,
         .response_limit = 512,
         .timeout_ms = 20000,
+        .buffer_size = 1024,
         .accepted_content_types = "application/json"
     };
     mp_http_response_t response;
-    esp_err_t error = mp_http_stream(&request, NULL, NULL, &response);
+    esp_err_t error = mp_http_session_stream(&s_sender_session, &request, NULL, NULL, &response);
     return error == ESP_OK && response.status == 200 ? ESP_OK :
            error == ESP_OK ? ESP_ERR_INVALID_RESPONSE : error;
+}
+
+static esp_err_t send_chunk(const char *chat_id, const char *text, size_t length)
+{
+    return send_request("sendMessage", chat_id, text, length);
+}
+
+static esp_err_t send_typing(const char *chat_id)
+{
+    return send_request("sendChatAction", chat_id, NULL, 0);
+}
+
+static esp_err_t queue_item(TickType_t timeout)
+{
+    xEventGroupClearBits(s_outbound_event, OUTBOUND_IDLE);
+    if (xQueueSend(s_outbound_queue, &s_enqueue, timeout) != pdTRUE) {
+        if (uxQueueMessagesWaiting(s_outbound_queue) == 0) {
+            xEventGroupSetBits(s_outbound_event, OUTBOUND_IDLE);
+        }
+        return ESP_ERR_TIMEOUT;
+    }
+    return ESP_OK;
 }
 
 esp_err_t mp_telegram_start(void)
@@ -176,47 +289,114 @@ esp_err_t mp_telegram_start(void)
     if (!config->telegram_token[0] || !config->owner_chat_id[0]) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (!s_send_lock) {
-        s_send_lock = xSemaphoreCreateMutexStatic(&s_send_lock_buffer);
+    if (!s_outbound_queue) {
+        s_outbound_queue = xQueueCreateStatic(OUTBOUND_QUEUE_LENGTH, sizeof(outbound_item_t),
+                                              s_outbound_storage,
+                                              &s_outbound_queue_buffer);
+        s_outbound_event = xEventGroupCreateStatic(&s_outbound_event_buffer);
+        s_enqueue_mutex = xSemaphoreCreateMutexStatic(&s_enqueue_mutex_buffer);
+        if (!s_outbound_queue || !s_outbound_event || !s_enqueue_mutex) {
+            return ESP_ERR_NO_MEM;
+        }
+        xEventGroupSetBits(s_outbound_event, OUTBOUND_IDLE);
     }
-    if (s_task) {
-        return ESP_OK;
+    if (!s_sender_task) {
+        s_sender_task = xTaskCreateStaticPinnedToCore(
+            sender_task, "mp_tg_send", CONFIG_MICROPAW_TELEGRAM_SENDER_STACK, NULL, 4,
+            s_sender_task_stack, &s_sender_task_buffer, 0);
+        if (!s_sender_task) {
+            return ESP_ERR_NO_MEM;
+        }
+        mp_metrics_register("telegram_sender", s_sender_task);
     }
-    s_task = xTaskCreateStaticPinnedToCore(telegram_task, "mp_telegram",
-                                           CONFIG_MICROPAW_TELEGRAM_STACK, NULL, 4,
-                                           s_task_stack, &s_task_buffer, 0);
-    if (s_task) {
-        mp_metrics_register("telegram", s_task);
+    if (!s_task) {
+        s_task = xTaskCreateStaticPinnedToCore(telegram_task, "mp_telegram",
+                                               CONFIG_MICROPAW_TELEGRAM_STACK, NULL, 4,
+                                               s_task_stack, &s_task_buffer, 0);
+        if (s_task) {
+            mp_metrics_register("telegram", s_task);
+        }
     }
     return s_task ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 esp_err_t mp_telegram_send(const char *chat_id, const char *text)
 {
-    if (!chat_id || !text || !chat_id[0] || !text[0]) {
+    if (!s_outbound_queue || !chat_id || !text || !chat_id[0] || !text[0]) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!s_send_lock) {
-        return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(s_enqueue_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
     }
-    xSemaphoreTake(s_send_lock, portMAX_DELAY);
-    while (*text) {
-        size_t length = utf8_chunk(text, 3900);
-        esp_err_t error = send_chunk(chat_id, text, length);
+    esp_err_t error = ESP_OK;
+    size_t remaining = strlen(text);
+    while (remaining) {
+        size_t length = utf8_chunk(text, remaining, 3900);
+        memset(&s_enqueue, 0, sizeof(s_enqueue));
+        s_enqueue.type = OUTBOUND_TEXT;
+        s_enqueue.text_length = length;
+        s_enqueue.queued_us = esp_timer_get_time();
+        strlcpy(s_enqueue.chat_id, chat_id, sizeof(s_enqueue.chat_id));
+        memcpy(s_enqueue.text, text, length);
+        s_enqueue.text[length] = 0;
+        error = queue_item(portMAX_DELAY);
         if (error != ESP_OK) {
-            xSemaphoreGive(s_send_lock);
-            return error;
+            break;
         }
         text += length;
-        while (*text == ' ' || *text == '\n') {
-            text++;
-        }
+        remaining -= length;
     }
-    xSemaphoreGive(s_send_lock);
-    return ESP_OK;
+    xSemaphoreGive(s_enqueue_mutex);
+    return error;
+}
+
+esp_err_t mp_telegram_typing_start(const char *chat_id, int64_t queued_us)
+{
+    if (!s_outbound_queue || !chat_id || !chat_id[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (xSemaphoreTake(s_enqueue_mutex, 0) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    memset(&s_enqueue, 0, sizeof(s_enqueue));
+    s_enqueue.type = OUTBOUND_TYPING_START;
+    s_enqueue.queued_us = queued_us;
+    strlcpy(s_enqueue.chat_id, chat_id, sizeof(s_enqueue.chat_id));
+    esp_err_t error = queue_item(0);
+    xSemaphoreGive(s_enqueue_mutex);
+    return error;
+}
+
+void mp_telegram_typing_stop(const char *chat_id)
+{
+    if (!s_outbound_queue || !chat_id || !chat_id[0]) {
+        return;
+    }
+    if (xSemaphoreTake(s_enqueue_mutex, portMAX_DELAY) == pdTRUE) {
+        memset(&s_enqueue, 0, sizeof(s_enqueue));
+        s_enqueue.type = OUTBOUND_TYPING_STOP;
+        strlcpy(s_enqueue.chat_id, chat_id, sizeof(s_enqueue.chat_id));
+        queue_item(portMAX_DELAY);
+        xSemaphoreGive(s_enqueue_mutex);
+    }
+}
+
+esp_err_t mp_telegram_flush(TickType_t timeout)
+{
+    if (!s_outbound_event) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    EventBits_t bits = xEventGroupWaitBits(s_outbound_event, OUTBOUND_IDLE,
+                                           pdFALSE, pdTRUE, timeout);
+    return bits & OUTBOUND_IDLE ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 TaskHandle_t mp_telegram_task_handle(void)
 {
     return s_task;
+}
+
+TaskHandle_t mp_telegram_sender_task_handle(void)
+{
+    return s_sender_task;
 }

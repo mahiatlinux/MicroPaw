@@ -1,0 +1,2 @@
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../partitions.csv"
+CONFIG_SECURE_BOOT_SIGNING_KEY="../../secrets/micropaw_signing_key.pem"

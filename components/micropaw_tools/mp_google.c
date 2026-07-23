@@ -13,13 +13,15 @@ EXT_RAM_BSS_ATTR static char s_token[1536];
 EXT_RAM_BSS_ATTR static char s_refresh_body[1024];
 EXT_RAM_BSS_ATTR static char s_response[CONFIG_MICROPAW_WORK_TEXT_BYTES];
 static time_t s_token_expiry;
+static mp_http_session_t s_session;
 
 static void google_error(char *output, size_t size, int status);
 static esp_err_t google_token(const char **token, char *output, size_t size);
 esp_err_t mp_google_request(esp_http_client_method_t method, const char *url,
                             const char *body, size_t body_size, mp_http_write_fn write,
-                            void *write_context, int timeout_ms, const char *accepted_content_types,
-                            mp_http_response_t *response, char *output, size_t size);
+                            void *write_context, int timeout_ms, const char *content_type,
+                            const char *accepted_content_types, mp_http_response_t *response,
+                            char *output, size_t size);
 const char *mp_google_response(void);
 
 static void google_error(char *output, size_t size, int status)
@@ -74,10 +76,12 @@ static esp_err_t google_token(const char **token, char *output, size_t size)
         .body_size = writer.length,
         .response_limit = sizeof(s_response) - 1,
         .timeout_ms = 20000,
+        .buffer_size = 4096,
         .accepted_content_types = "application/json"
     };
     mp_http_response_t response;
-    esp_err_t result = mp_http_collect(&request, s_response, sizeof(s_response), &response);
+    esp_err_t result = mp_http_session_collect(&s_session, &request, s_response,
+                                               sizeof(s_response), &response);
     if (result != ESP_OK || response.truncated || response.status != 200) {
         if (result == ESP_OK) {
             google_error(output, size, response.status);
@@ -97,8 +101,9 @@ static esp_err_t google_token(const char **token, char *output, size_t size)
 
 esp_err_t mp_google_request(esp_http_client_method_t method, const char *url,
                             const char *body, size_t body_size, mp_http_write_fn write,
-                            void *write_context, int timeout_ms, const char *accepted_content_types,
-                            mp_http_response_t *response, char *output, size_t size)
+                            void *write_context, int timeout_ms, const char *content_type,
+                            const char *accepted_content_types, mp_http_response_t *response,
+                            char *output, size_t size)
 {
     if (!url || !response || !output || size == 0) {
         return ESP_ERR_INVALID_ARG;
@@ -112,7 +117,7 @@ esp_err_t mp_google_request(esp_http_client_method_t method, const char *url,
     snprintf(authorization, sizeof(authorization), "Bearer %s", token);
     mp_http_header_t headers[] = {
         {"Authorization", authorization},
-        {"Content-Type", "application/json"}
+        {"Content-Type", content_type ? content_type : "application/json"}
     };
     mp_http_request_t request = {
         .url = url,
@@ -125,9 +130,10 @@ esp_err_t mp_google_request(esp_http_client_method_t method, const char *url,
         .write_context = write_context,
         .response_limit = sizeof(s_response) - 1,
         .timeout_ms = timeout_ms,
+        .buffer_size = 4096,
         .accepted_content_types = accepted_content_types
     };
-    result = mp_http_collect(&request, s_response, sizeof(s_response), response);
+    result = mp_http_session_collect(&s_session, &request, s_response, sizeof(s_response), response);
     if (result != ESP_OK) {
         return result;
     }

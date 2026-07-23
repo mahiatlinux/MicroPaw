@@ -6,6 +6,8 @@
 
 MicroPaw is a personal assistant that runs on an ESP32-S3. It supports Telegram, memory, scheduled reminders, web tools, Gmail and Google Calendar. The firmware uses ESP-IDF and C.
 
+The supported target is an ESP32-S3 N16R8 with 8 MB octal PSRAM and 16 MB flash.
+
 ## Build
 
 ```sh
@@ -50,6 +52,8 @@ Gmail supports numbered search and listing, message reads, send, scheduled send,
 
 Persistent memory holds eight durable entries of up to 1,023 bytes each. Separate facts should use separate entries.
 
+Firmware builds are signed with the RSA-3072 key at `secrets/micropaw_signing_key.pem`. GitHub Actions reads the same key from `MICROPAW_SIGNING_KEY_B64`. Install the first signed image over USB before using OTA updates.
+
 Google OAuth needs these scopes in one offline grant:
 
 ```text
@@ -61,8 +65,18 @@ An existing refresh token created with only `gmail.send` must be replaced after 
 
 ## Commands
 
-Telegram supports `/help`, `/metrics`, `/memory`, `/jobs`, `/forget`, `/reset-state YES`, `/confirm ID` and `/cancel ID`.
+`/help` lists Telegram commands.
 
-`/reset-state YES` clears saved memory, conversation history, scheduled jobs and pending permissions. Credentials stay on the ESP.
+`/metrics` reports request, inference, tool, context, delivery and HTTP timings without message content.
+
+`/memory` lists saved facts, and `/jobs` lists scheduled jobs.
+
+`/forget` clears conversation context while keeping saved facts and jobs.
+
+`/reset` starts the owner-only two-step reset, and `/reset cancel` cancels it.
+
+`/update` installs the latest signed release for this project and skips the current version.
+
+`/confirm ID` approves a pending permission, and `/cancel ID` rejects it.
 
 The serial console supports `config`, `set KEY VALUE`, `push-config BYTES`, `metrics`, `submit TEXT`, `reset-state YES`, `erase-config YES` and `reboot`.

@@ -8,6 +8,7 @@
 
 esp_err_t mp_tools_init(void);
 bool mp_tools_json(char *output, size_t size);
+const char *mp_tools_catalog(void);
 esp_err_t mp_tools_execute(const char *name, const char *arguments,
                            const mp_tool_context_t *context, bool confirmed,
                            char *output, size_t size);

@@ -71,7 +71,8 @@ esp_err_t mp_wifi_start(void)
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if ((error = esp_wifi_set_mode(WIFI_MODE_STA)) != ESP_OK ||
         (error = esp_wifi_set_config(WIFI_IF_STA, &wifi)) != ESP_OK ||
-        (error = esp_wifi_start()) != ESP_OK) {
+        (error = esp_wifi_start()) != ESP_OK ||
+        (error = esp_wifi_set_ps(WIFI_PS_NONE)) != ESP_OK) {
         return error;
     }
     esp_sntp_config_t sntp = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");

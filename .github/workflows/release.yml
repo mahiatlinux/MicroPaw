@@ -1,0 +1,32 @@
+name: Signed release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.0.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build signed firmware
+        env:
+          MICROPAW_SIGNING_KEY_B64: ${{ secrets.MICROPAW_SIGNING_KEY_B64 }}
+        shell: bash
+        run: |
+          mkdir -p secrets
+          trap 'rm -f secrets/micropaw_signing_key.pem' EXIT
+          printf '%s' "$MICROPAW_SIGNING_KEY_B64" | base64 -d > secrets/micropaw_signing_key.pem
+          chmod 600 secrets/micropaw_signing_key.pem
+          idf.py build
+          espsecure verify-signature --version 2 --keyfile secrets/micropaw_signing_key.pem build/micropaw.bin
+          cp build/micropaw.bin micropaw.bin
+      - name: Publish firmware
+        uses: softprops/action-gh-release@v2
+        with:
+          files: micropaw.bin

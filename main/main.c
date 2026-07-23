@@ -10,8 +10,11 @@
 #include "esp_system.h"
 #include "mp_agent.h"
 #include "mp_config.h"
+#include "mp_confirmation.h"
+#include "mp_context.h"
 #include "mp_memory.h"
 #include "mp_metrics.h"
+#include "mp_ota.h"
 #include "mp_scheduler.h"
 #include "mp_telegram.h"
 #include "mp_tools.h"
@@ -25,6 +28,8 @@ EXT_RAM_BSS_ATTR static char s_config_toml[MP_CONFIG_TOML_MAX + 1];
 static const char *TAG = "micropaw";
 
 static esp_err_t send_output(const char *chat_id, const char *text);
+static esp_err_t flush_output(TickType_t timeout);
+static void finish_output(const char *chat_id);
 static esp_err_t schedule_output(const char *chat_id, const char *text);
 static esp_err_t setup_console(void);
 static void cli_task(void *argument);
@@ -41,8 +46,31 @@ static esp_err_t send_output(const char *chat_id, const char *text)
         return mp_telegram_send(chat_id, text);
     }
 #endif
-    ESP_LOGI("reply", "%s", text);
+    printf("%s\n", text);
     return ESP_OK;
+}
+
+static esp_err_t flush_output(TickType_t timeout)
+{
+#if CONFIG_MICROPAW_TELEGRAM
+    if (mp_config_get()->telegram_token[0]) {
+        return mp_telegram_flush(timeout);
+    }
+#else
+    (void)timeout;
+#endif
+    return ESP_OK;
+}
+
+static void finish_output(const char *chat_id)
+{
+#if CONFIG_MICROPAW_TELEGRAM
+    if (mp_config_get()->telegram_token[0] && strcmp(chat_id, "serial") != 0) {
+        mp_telegram_typing_stop(chat_id);
+    }
+#else
+    (void)chat_id;
+#endif
 }
 
 static esp_err_t schedule_output(const char *chat_id, const char *text)
@@ -137,15 +165,24 @@ static void cli_line(char *line)
     } else if (strcmp(line, "erase-config YES") == 0) {
         printf("%s\n", esp_err_to_name(mp_config_erase()));
     } else if (strcmp(line, "metrics") == 0) {
-        char output[768];
+        char output[1536];
         mp_metrics_format(output, sizeof(output));
         printf("%s", output);
     } else if (strcmp(line, "forget-telegram") == 0) {
-        const char *chat_id = mp_config_get()->owner_chat_id;
-        printf("%s\n", chat_id[0] ? esp_err_to_name(mp_history_clear(chat_id)) : "owner_chat_id is unset");
+        printf("%s\n", esp_err_to_name(mp_context_forget()));
     } else if (strcmp(line, "reset-state YES") == 0) {
-        printf("%s\n", esp_err_to_name(mp_agent_submit("serial", "/reset-state YES", false,
-                                                        pdMS_TO_TICKS(100))));
+        esp_err_t error = mp_memory_reset();
+        if (error == ESP_OK) {
+            error = mp_context_forget();
+        }
+        if (error == ESP_OK) {
+            error = mp_scheduler_reset();
+        }
+        if (error == ESP_OK) {
+            mp_confirmation_reset();
+            mp_agent_reset_confirmation();
+        }
+        printf("%s\n", esp_err_to_name(error));
     } else if (strncmp(line, "submit ", 7) == 0) {
         printf("%s\n", esp_err_to_name(mp_agent_submit("serial", line + 7, false, pdMS_TO_TICKS(100))));
     } else if (strcmp(line, "reboot") == 0) {
@@ -161,8 +198,9 @@ static esp_err_t initialize(void)
     if ((error = setup_console()) != ESP_OK ||
         (error = mp_config_init()) != ESP_OK ||
         (error = mp_memory_init()) != ESP_OK ||
+        (error = mp_context_init()) != ESP_OK ||
         (error = mp_tools_init()) != ESP_OK ||
-        (error = mp_agent_init(send_output)) != ESP_OK ||
+        (error = mp_agent_init(send_output, flush_output, finish_output)) != ESP_OK ||
         (error = mp_scheduler_init(schedule_output)) != ESP_OK ||
         (error = mp_agent_start()) != ESP_OK ||
         (error = mp_scheduler_start()) != ESP_OK) {
@@ -193,6 +231,13 @@ void app_main(void)
     esp_err_t error = initialize();
     if (error != ESP_OK) {
         ESP_LOGE(TAG, "init: %s", esp_err_to_name(error));
+        mp_ota_rollback_pending();
+        return;
+    }
+    error = mp_ota_confirm_running();
+    if (error != ESP_OK) {
+        ESP_LOGE(TAG, "OTA confirm: %s", esp_err_to_name(error));
+        mp_ota_rollback_pending();
         return;
     }
     ESP_LOGI(TAG, "MicroPaw ready. Use the serial config command before adding secrets.");
