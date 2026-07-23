@@ -42,7 +42,7 @@ jobs:
           trap 'rm -f secrets/micropaw_signing_key.pem' EXIT
           printf '%s' "$MICROPAW_SIGNING_KEY_B64" | base64 -d > secrets/micropaw_signing_key.pem
           chmod 600 secrets/micropaw_signing_key.pem
-          python3 -m unittest tests/test_contract.py
+          python3 tests/test_contract.py
           idf.py build
           idf.py -C test_apps/agent build
           espsecure verify-signature --version 2 --keyfile secrets/micropaw_signing_key.pem build/micropaw.bin
