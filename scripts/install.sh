@@ -2,17 +2,18 @@
 set -eu
 
 base_url=https://github.com/mahiatlinux/MicroPaw/releases/latest/download
-if command -v python3 >/dev/null 2>&1; then
-    python_cmd=python3
-elif command -v python >/dev/null 2>&1; then
-    python_cmd=python
-else
+python_cmd=
+for candidate in python3 python python3.14 python3.13 python3.12 python3.11 python3.10; do
+    if command -v "$candidate" >/dev/null 2>&1 &&
+        "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' 2>/dev/null; then
+        python_cmd=$candidate
+        break
+    fi
+done
+if [ -z "$python_cmd" ]; then
     printf '%s\n' "Python 3.10 or newer is required." >&2
     exit 1
 fi
-
-"$python_cmd" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' ||
-    { printf '%s\n' "Python 3.10 or newer is required." >&2; exit 1; }
 
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
