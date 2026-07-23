@@ -33,7 +33,11 @@ try {
     if ($actual -ne $expected) {
         throw "Firmware checksum verification failed."
     }
-    Invoke-Python @("-m", "pip", "install", "--user", "--upgrade", "esptool~=5.0")
+    $venv = Join-Path $tempDir "venv"
+    Invoke-Python @("-m", "venv", $venv)
+    $pythonCommand = Join-Path $venv "Scripts\python.exe"
+    $pythonPrefix = @()
+    Invoke-Python @("-m", "pip", "install", "--upgrade", "esptool~=5.0")
     Write-Host "Connecting to the ESP32-S3. Hold BOOT now if automatic reset is unavailable."
     $flashArguments = @("-m", "esptool", "--chip", "esp32s3")
     if ($env:MICROPAW_PORT) {

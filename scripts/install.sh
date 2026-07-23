@@ -35,7 +35,9 @@ if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
     exit 1
 fi
 
-"$python_cmd" -m pip install --user --upgrade "esptool~=5.0"
+"$python_cmd" -m venv "$tmp_dir/venv"
+python_cmd="$tmp_dir/venv/bin/python"
+"$python_cmd" -m pip install --upgrade "esptool~=5.0"
 printf '%s\n' "Connecting to the ESP32-S3. Hold BOOT now if automatic reset is unavailable."
 if [ -n "${MICROPAW_PORT:-}" ]; then
     "$python_cmd" -m esptool --chip esp32s3 --port "$MICROPAW_PORT" --before default-reset --after hard-reset write-flash 0x0 "$image"
