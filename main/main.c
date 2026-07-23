@@ -30,7 +30,7 @@ static const char *TAG = "micropaw";
 static esp_err_t send_output(const char *chat_id, const char *text);
 static esp_err_t flush_output(TickType_t timeout);
 static void finish_output(const char *chat_id);
-static esp_err_t schedule_output(const char *chat_id, const char *text);
+static esp_err_t schedule_output(uint32_t id, const char *chat_id, const char *text);
 static esp_err_t setup_console(void);
 static void cli_task(void *argument);
 static void cli_line(char *line);
@@ -73,9 +73,10 @@ static void finish_output(const char *chat_id)
 #endif
 }
 
-static esp_err_t schedule_output(const char *chat_id, const char *text)
+static esp_err_t schedule_output(uint32_t id, const char *chat_id, const char *text)
 {
-    return mp_agent_submit(chat_id, text, true, pdMS_TO_TICKS(100));
+    return mp_wifi_connected() ?
+           mp_agent_submit_scheduled(id, chat_id, text) : ESP_ERR_INVALID_STATE;
 }
 
 static esp_err_t setup_console(void)

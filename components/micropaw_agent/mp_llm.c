@@ -5,7 +5,9 @@
 
 #include "esp_system.h"
 #include "mp_config.h"
+#include "mp_metrics.h"
 #include "mp_net.h"
+#include "mp_wifi.h"
 #include "sdkconfig.h"
 
 typedef enum {
@@ -730,7 +732,6 @@ esp_err_t mp_llm_stream(const char *body, mp_llm_result_t *result)
         (key_required && !config->llm_api_key[0])) {
         return ESP_ERR_INVALID_STATE;
     }
-    mp_llm_parse_begin(result);
     char authorization[272];
     mp_http_header_t headers[3] = {
         {"Content-Type", "application/json"},
@@ -754,8 +755,20 @@ esp_err_t mp_llm_stream(const char *body, mp_llm_result_t *result)
         .accepted_content_types = "text/event-stream,application/json"
     };
     mp_http_response_t response;
-    esp_err_t error = mp_http_session_stream(&s_session, &request, sse_chunk, result,
-                                             &response);
+    esp_err_t error;
+    bool retry;
+    do {
+        mp_wifi_wait(portMAX_DELAY);
+        mp_llm_parse_begin(result);
+        error = mp_http_session_stream(&s_session, &request, sse_chunk, result, &response);
+        retry = mp_http_retryable(error) ||
+                (error == ESP_OK && mp_http_status_retryable(response.status));
+        if (retry) {
+            mp_metrics_error("llm_retry",
+                             error == ESP_OK ? ESP_ERR_INVALID_RESPONSE : error);
+            vTaskDelay(pdMS_TO_TICKS(3000));
+        }
+    } while (retry);
     if (error != ESP_OK) {
         return error;
     }

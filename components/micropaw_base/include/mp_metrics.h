@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -16,5 +17,6 @@ void mp_metrics_tool(const char *name, uint32_t elapsed_ms);
 void mp_metrics_delivery(uint32_t elapsed_ms);
 void mp_metrics_http(int status, size_t bytes, uint32_t connect_ms, uint32_t first_byte_ms,
                      uint32_t total_ms, bool reused);
+void mp_metrics_error(const char *source, esp_err_t error);
 void mp_metrics_format(char *output, size_t size);
 void mp_metrics_log(void);

@@ -55,7 +55,7 @@ static volatile mp_agent_state_t s_state = MP_AGENT_IDLE;
 static const char *TAG = "agent";
 
 static void agent_task(void *argument);
-static void process_message(const mp_message_t *message);
+static bool process_message(const mp_message_t *message);
 static bool handle_command(const mp_message_t *message);
 static bool owner_message(const mp_message_t *message);
 static void reset_confirmation(void);
@@ -70,13 +70,16 @@ static bool persist_turn(const mp_message_t *message, const mp_llm_result_t *fin
                          size_t *turn_size);
 static bool build_compaction_request(uint32_t remove_count);
 static void compact_context(bool force);
-static void send_text(const char *chat_id, const char *text, bool final);
+static esp_err_t send_text(const char *chat_id, const char *text, bool final);
 static void send_progress(const char *chat_id, const char *text);
 static void execute_confirmation(const mp_message_t *message, uint32_t id);
 static void ota_progress(const char *text, void *context);
+static esp_err_t submit_message(uint32_t schedule_id, const char *chat_id, const char *text,
+                                bool proactive, TickType_t timeout);
 esp_err_t mp_agent_init(mp_send_fn send, mp_flush_fn flush, mp_finish_fn finish);
 esp_err_t mp_agent_start(void);
 esp_err_t mp_agent_submit(const char *chat_id, const char *text, bool proactive, TickType_t timeout);
+esp_err_t mp_agent_submit_scheduled(uint32_t id, const char *chat_id, const char *text);
 void mp_agent_reset_confirmation(void);
 mp_agent_state_t mp_agent_state(void);
 TaskHandle_t mp_agent_task_handle(void);
@@ -88,16 +91,22 @@ static void agent_task(void *argument)
     while (true) {
         if (xQueueReceive(s_queue, &message, portMAX_DELAY) == pdTRUE) {
             mp_metrics_request_begin(message.queued_us);
-            process_message(&message);
+            bool success = process_message(&message);
+            if (message.schedule_id) {
+                esp_err_t error = mp_scheduler_complete(message.schedule_id, success);
+                if (error != ESP_OK) {
+                    mp_metrics_error("scheduler", error);
+                }
+            }
             s_state = MP_AGENT_IDLE;
         }
     }
 }
 
-static void process_message(const mp_message_t *message)
+static bool process_message(const mp_message_t *message)
 {
     if (handle_command(message)) {
-        return;
+        return true;
     }
     if (message->proactive) {
         mp_tool_context_t context = {0};
@@ -106,19 +115,21 @@ static void process_message(const mp_message_t *message)
         esp_err_t error = mp_tools_execute_scheduled(message->text, &context,
                                                      s_tool_output, sizeof(s_tool_output));
         if (error != ESP_ERR_NOT_FOUND) {
-            if (error != ESP_OK && !s_tool_output[0]) {
-                snprintf(s_tool_output, sizeof(s_tool_output), "Tool error: %s",
-                         esp_err_to_name(error));
+            if (error != ESP_OK) {
+                mp_metrics_error("scheduled_tool", error);
+                ESP_LOGW(TAG, "scheduled job %lu: %s",
+                         (unsigned long)message->schedule_id, esp_err_to_name(error));
+                return false;
             }
             send_text(message->chat_id, s_tool_output, true);
-            return;
+            return true;
         }
     }
     if (!mp_llm_ready()) {
         send_text(message->chat_id,
                   "The LLM provider is not configured. Check llm_provider, llm_model, llm_api_key and llm_endpoint.",
                   true);
-        return;
+        return false;
     }
     s_state = MP_AGENT_CONTEXT;
     s_trace_length = 0;
@@ -126,7 +137,7 @@ static void process_message(const mp_message_t *message)
     if (!build_instructions(message->proactive) || !build_request(message)) {
         s_state = MP_AGENT_ERROR;
         send_text(message->chat_id, "The request exceeded the device buffer.", true);
-        return;
+        return false;
     }
     while (true) {
         s_state = MP_AGENT_INFERENCE;
@@ -135,13 +146,19 @@ static void process_message(const mp_message_t *message)
         mp_metrics_inference((uint32_t)((esp_timer_get_time() - started) / 1000));
         if (error != ESP_OK) {
             s_state = MP_AGENT_ERROR;
-            send_text(message->chat_id,
-                      s_result.error[0] ? s_result.error : esp_err_to_name(error), true);
-            return;
+            mp_metrics_error("llm", error);
+            if (!message->proactive) {
+                send_text(message->chat_id,
+                          s_result.error[0] ? s_result.error : esp_err_to_name(error), true);
+            }
+            return false;
         }
         if (!s_result.call_count) {
             s_state = MP_AGENT_RESPONSE;
-            send_text(message->chat_id, s_result.text, true);
+            esp_err_t delivery = send_text(message->chat_id, s_result.text, true);
+            if (message->proactive && delivery == ESP_OK && s_flush) {
+                delivery = s_flush(portMAX_DELAY);
+            }
             if (!message->proactive) {
                 size_t turn_size = 0;
                 if (persist_turn(message, &s_result, &turn_size)) {
@@ -150,14 +167,14 @@ static void process_message(const mp_message_t *message)
                     ESP_LOGW(TAG, "context append failed");
                 }
             }
-            return;
+            return delivery == ESP_OK;
         }
         if (s_result.text[0]) {
             send_progress(message->chat_id, s_result.text);
             if (!append_progress(&s_result)) {
                 s_state = MP_AGENT_ERROR;
                 send_text(message->chat_id, "The progress trace exceeded the device buffer.", true);
-                return;
+                return false;
             }
         }
         s_state = MP_AGENT_TOOL;
@@ -179,13 +196,13 @@ static void process_message(const mp_message_t *message)
             if (!append_tool_exchange(call, s_tool_output)) {
                 s_state = MP_AGENT_ERROR;
                 send_text(message->chat_id, "The tool batch exceeded the trace buffer.", true);
-                return;
+                return false;
             }
         }
         if (!build_request(message)) {
             s_state = MP_AGENT_ERROR;
             send_text(message->chat_id, "The tool results exceeded the request buffer.", true);
-            return;
+            return false;
         }
     }
 }
@@ -549,14 +566,16 @@ static void compact_context(bool force)
     }
 }
 
-static void send_text(const char *chat_id, const char *text, bool final)
+static esp_err_t send_text(const char *chat_id, const char *text, bool final)
 {
+    esp_err_t error = ESP_OK;
     if (s_send) {
-        s_send(chat_id, text);
+        error = s_send(chat_id, text);
     }
     if (final && s_finish) {
         s_finish(chat_id);
     }
+    return error;
 }
 
 static void send_progress(const char *chat_id, const char *text)
@@ -625,12 +644,25 @@ esp_err_t mp_agent_start(void)
 
 esp_err_t mp_agent_submit(const char *chat_id, const char *text, bool proactive, TickType_t timeout)
 {
+    return submit_message(0, chat_id, text, proactive, timeout);
+}
+
+esp_err_t mp_agent_submit_scheduled(uint32_t id, const char *chat_id, const char *text)
+{
+    return id ? submit_message(id, chat_id, text, true, pdMS_TO_TICKS(100)) :
+           ESP_ERR_INVALID_ARG;
+}
+
+static esp_err_t submit_message(uint32_t schedule_id, const char *chat_id, const char *text,
+                                bool proactive, TickType_t timeout)
+{
     if (!s_queue || !chat_id || !text || strlen(chat_id) >= MP_CHAT_ID_LEN ||
         strlen(text) >= MP_MESSAGE_LEN) {
         return ESP_ERR_INVALID_ARG;
     }
     mp_message_t message = {
         .queued_us = esp_timer_get_time(),
+        .schedule_id = schedule_id,
         .proactive = proactive
     };
     strlcpy(message.chat_id, chat_id, sizeof(message.chat_id));

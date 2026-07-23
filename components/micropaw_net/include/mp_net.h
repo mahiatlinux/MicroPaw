@@ -62,3 +62,5 @@ esp_err_t mp_http_collect(const mp_http_request_t *request, char *output, size_t
                           mp_http_response_t *response);
 bool mp_url_is_https(const char *url);
 bool mp_url_is_public_https(const char *url);
+bool mp_http_retryable(esp_err_t error);
+bool mp_http_status_retryable(int status);
