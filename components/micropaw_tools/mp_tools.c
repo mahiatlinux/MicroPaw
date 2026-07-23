@@ -57,6 +57,8 @@ EXT_RAM_BSS_ATTR static char s_arg5[128];
 static bool json_string(const char *json, const char *name, char *output, size_t size);
 static bool json_uint(const char *json, const char *name, uint32_t *value);
 static bool build_catalog(char *output, size_t size);
+static void schedule_result(char *output, size_t size, const char *kind,
+                            uint32_t id, int64_t epoch);
 static tool_mode_t permission_mode(const char *permission);
 static tool_mode_t tool_mode(const tool_t *tool);
 static esp_err_t memory_save(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
@@ -97,7 +99,7 @@ esp_err_t mp_tools_execute_scheduled(const char *text, const mp_tool_context_t *
 static const tool_t s_tools[] = {
     {"memory_save", "{\"type\":\"function\",\"name\":\"memory_save\",\"description\":\"Save one durable fact of up to 1023 bytes for later conversations. Save separate facts with separate calls.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"note\":{\"type\":\"string\"}},\"required\":[\"note\"],\"additionalProperties\":false}}", memory_save},
     {"memory_list", "{\"type\":\"function\",\"name\":\"memory_list\",\"description\":\"Read durable facts.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", memory_list},
-    {"schedule_add", "{\"type\":\"function\",\"name\":\"schedule_add\",\"description\":\"Schedule a future assistant turn. repeat_seconds is zero for a one-time job.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"prompt\",\"delay_seconds\",\"repeat_seconds\"],\"additionalProperties\":false}}", schedule_add},
+    {"schedule_add", "{\"type\":\"function\",\"name\":\"schedule_add\",\"description\":\"Schedule a future assistant turn. Call time_now before converting an absolute local time to delay_seconds. repeat_seconds is zero for a one-time job.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"prompt\",\"delay_seconds\",\"repeat_seconds\"],\"additionalProperties\":false}}", schedule_add},
     {"schedule_list", "{\"type\":\"function\",\"name\":\"schedule_list\",\"description\":\"List scheduled jobs.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", schedule_list},
     {"schedule_delete", "{\"type\":\"function\",\"name\":\"schedule_delete\",\"description\":\"Delete a scheduled job by ID.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", schedule_delete},
     {"time_now", "{\"type\":\"function\",\"name\":\"time_now\",\"description\":\"Read the device local date and time.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", time_now},
@@ -113,7 +115,7 @@ static const tool_t s_tools[] = {
 #endif
 #if CONFIG_MICROPAW_GMAIL
     {"email_send", "{\"type\":\"function\",\"name\":\"email_send\",\"description\":\"Send a plain-text email through Gmail. The body uses the configured PSRAM work-text capacity.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"to\",\"subject\",\"body\"],\"additionalProperties\":false}}", email_send},
-    {"email_schedule", "{\"type\":\"function\",\"name\":\"email_schedule\",\"description\":\"Schedule an exact plain-text Gmail email. Persistent scheduled messages are smaller than immediate emails. Use this instead of schedule_add for delayed email. The current email permission is checked when it is due.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"}},\"required\":[\"to\",\"subject\",\"body\",\"delay_seconds\"],\"additionalProperties\":false}}", email_schedule},
+    {"email_schedule", "{\"type\":\"function\",\"name\":\"email_schedule\",\"description\":\"Schedule an exact plain-text Gmail email. Call time_now before converting an absolute local time to delay_seconds. The current email permission is checked when it is due.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"}},\"required\":[\"to\",\"subject\",\"body\",\"delay_seconds\"],\"additionalProperties\":false}}", email_schedule},
     {"email_search", "{\"type\":\"function\",\"name\":\"email_search\",\"description\":\"Search or list Gmail messages with Gmail query syntax. Returns a numbered page. Pass the returned page token to continue with no total-page limit. Use an empty query to list mail and an empty token for the first page.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"page_token\":{\"type\":\"string\"},\"page_size\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"required\":[\"query\",\"page_token\",\"page_size\"],\"additionalProperties\":false}}", email_search},
     {"email_get", "{\"type\":\"function\",\"name\":\"email_get\",\"description\":\"Read one Gmail message by the ID returned by email_search.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", email_get},
     {"email_modify", "{\"type\":\"function\",\"name\":\"email_modify\",\"description\":\"Change a Gmail message state.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"action\":{\"type\":\"string\",\"enum\":[\"mark_read\",\"mark_unread\",\"archive\",\"move_to_inbox\",\"star\",\"unstar\",\"mark_spam\",\"not_spam\"]}},\"required\":[\"id\",\"action\"],\"additionalProperties\":false}}", email_modify},
@@ -181,6 +183,18 @@ static bool json_uint(const char *json, const char *name, uint32_t *value)
     return true;
 }
 
+static void schedule_result(char *output, size_t size, const char *kind,
+                            uint32_t id, int64_t epoch)
+{
+    time_t due = (time_t)epoch;
+    struct tm local;
+    char when[32];
+    localtime_r(&due, &local);
+    strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%S%z", &local);
+    snprintf(output, size, "%s %lu scheduled for %s.",
+             kind, (unsigned long)id, when);
+}
+
 static esp_err_t memory_save(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
 {
     (void)context;
@@ -212,14 +226,15 @@ static esp_err_t schedule_add(const char *arguments, const mp_tool_context_t *co
     uint32_t delay;
     uint32_t repeat;
     uint32_t id;
+    int64_t epoch;
     if (!json_string(arguments, "prompt", s_arg1, sizeof(s_arg1)) ||
         !json_uint(arguments, "delay_seconds", &delay) ||
         !json_uint(arguments, "repeat_seconds", &repeat) || delay == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t error = mp_scheduler_add(context->chat_id, s_arg1, delay, repeat, &id);
+    esp_err_t error = mp_scheduler_add(context->chat_id, s_arg1, delay, repeat, &id, &epoch);
     if (error == ESP_OK) {
-        snprintf(output, size, "Scheduled job %lu.", (unsigned long)id);
+        schedule_result(output, size, "Job", id, epoch);
     }
     return error;
 }
@@ -310,6 +325,7 @@ static esp_err_t email_schedule(const char *arguments, const mp_tool_context_t *
 {
     uint32_t delay;
     uint32_t id;
+    int64_t epoch;
     if (!json_string(arguments, "to", s_arg3, sizeof(s_arg3)) ||
         !json_string(arguments, "subject", s_arg2, sizeof(s_arg2)) ||
         !json_string(arguments, "body", s_arg1, sizeof(s_arg1)) ||
@@ -330,9 +346,9 @@ static esp_err_t email_schedule(const char *arguments, const mp_tool_context_t *
         strlcpy(output, "Scheduled email exceeds persistent job capacity. Send it now or shorten it.", size);
         return ESP_ERR_INVALID_SIZE;
     }
-    esp_err_t error = mp_scheduler_add(context->chat_id, output, delay, 0, &id);
+    esp_err_t error = mp_scheduler_add(context->chat_id, output, delay, 0, &id, &epoch);
     if (error == ESP_OK) {
-        snprintf(output, size, "Scheduled email job %lu.", (unsigned long)id);
+        schedule_result(output, size, "Email job", id, epoch);
     }
     return error;
 }

@@ -33,6 +33,9 @@ typedef struct {
     uint32_t http_first_byte_ms;
     uint32_t http_total_ms;
     bool http_reused;
+    char error_source[24];
+    esp_err_t error;
+    uint32_t error_count;
 } metrics_t;
 
 static const char *TAG = "metrics";
@@ -49,6 +52,7 @@ void mp_metrics_tool(const char *name, uint32_t elapsed_ms);
 void mp_metrics_delivery(uint32_t elapsed_ms);
 void mp_metrics_http(int status, size_t bytes, uint32_t connect_ms, uint32_t first_byte_ms,
                      uint32_t total_ms, bool reused);
+void mp_metrics_error(const char *source, esp_err_t error);
 void mp_metrics_format(char *output, size_t size);
 void mp_metrics_log(void);
 
@@ -113,6 +117,13 @@ void mp_metrics_http(int status, size_t bytes, uint32_t connect_ms, uint32_t fir
     s_metrics.http_reused = reused;
 }
 
+void mp_metrics_error(const char *source, esp_err_t error)
+{
+    strlcpy(s_metrics.error_source, source, sizeof(s_metrics.error_source));
+    s_metrics.error = error;
+    s_metrics.error_count++;
+}
+
 void mp_metrics_format(char *output, size_t size)
 {
     if (size == 0) {
@@ -129,7 +140,8 @@ void mp_metrics_format(char *output, size_t size)
         "last_request queue_ms=%lu typing_ms=%lu progress_ms=%lu inference_ms=%lu rounds=%lu tools=%lu tool_ms=%lu delivery_ms=%lu\n"
         "slowest_tool=%s slowest_tool_ms=%lu\n"
         "context_bytes=%lu compactions=%lu compaction_ms=%lu compaction_failures=%lu\n"
-        "last_http status=%d bytes=%lu connect_ms=%lu first_byte_ms=%lu total_ms=%lu reused=%s\n",
+        "last_http status=%d bytes=%lu connect_ms=%lu first_byte_ms=%lu total_ms=%lu reused=%s\n"
+        "last_error source=%s code=%s count=%lu\n",
         (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
         (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
         (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
@@ -160,7 +172,9 @@ void mp_metrics_format(char *output, size_t size)
         (unsigned long)mp_context_compaction_failures(), s_metrics.http_status,
         (unsigned long)s_metrics.http_bytes, (unsigned long)s_metrics.http_connect_ms,
         (unsigned long)s_metrics.http_first_byte_ms, (unsigned long)s_metrics.http_total_ms,
-        s_metrics.http_reused ? "yes" : "no");
+        s_metrics.http_reused ? "yes" : "no",
+        s_metrics.error_source[0] ? s_metrics.error_source : "none",
+        esp_err_to_name(s_metrics.error), (unsigned long)s_metrics.error_count);
     if (used < 0 || (size_t)used >= size) {
         output[size - 1] = 0;
         return;

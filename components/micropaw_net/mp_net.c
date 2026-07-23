@@ -34,6 +34,8 @@ esp_err_t mp_http_collect(const mp_http_request_t *request, char *output, size_t
                           mp_http_response_t *response);
 bool mp_url_is_https(const char *url);
 bool mp_url_is_public_https(const char *url);
+bool mp_http_retryable(esp_err_t error);
+bool mp_http_status_retryable(int status);
 
 static esp_err_t http_event(esp_http_client_event_t *event)
 {
@@ -177,6 +179,10 @@ esp_err_t mp_http_session_stream(mp_http_session_t *session, const mp_http_reque
         if (error == ESP_OK) {
             error = esp_http_client_request_send(session->handle, (int)request->body_size);
         }
+        if (error != ESP_OK) {
+            close_connection(session);
+            error = esp_http_client_open(session->handle, (int)request->body_size);
+        }
     } else {
         error = esp_http_client_open(session->handle, (int)request->body_size);
     }
@@ -310,4 +316,18 @@ bool mp_url_is_public_https(const char *url)
         }
     }
     return !numeric;
+}
+
+bool mp_http_retryable(esp_err_t error)
+{
+    return error == ESP_FAIL || error == ESP_ERR_TIMEOUT ||
+           error == ESP_ERR_HTTP_CONNECT || error == ESP_ERR_HTTP_CONNECTING ||
+           error == ESP_ERR_HTTP_WRITE_DATA || error == ESP_ERR_HTTP_FETCH_HEADER ||
+           error == ESP_ERR_HTTP_READ_TIMEOUT || error == ESP_ERR_HTTP_CONNECTION_CLOSED ||
+           error == ESP_ERR_HTTP_EAGAIN;
+}
+
+bool mp_http_status_retryable(int status)
+{
+    return status == 408 || status == 429 || status >= 500;
 }

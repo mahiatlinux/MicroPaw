@@ -131,6 +131,28 @@ class FirmwareContractTest(unittest.TestCase):
         self.assertIn("CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y", defaults)
         self.assertIn("CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y", defaults)
 
+    def test_offline_delivery_contract(self):
+        agent = source("components/micropaw_agent/mp_agent.c")
+        net = source("components/micropaw_net/mp_net.c")
+        scheduler = source("components/micropaw_base/mp_scheduler.c")
+        telegram = source("components/micropaw_telegram/mp_telegram.c")
+        tools = source("components/micropaw_tools/mp_tools.c")
+        self.assertIn("deliver_text(s_current.chat_id", telegram)
+        self.assertIn("while (true)", telegram[telegram.index("static esp_err_t deliver_text"):])
+        self.assertIn("mp_http_retryable(error)", telegram)
+        self.assertIn("mp_agent_submit(id, s_message, false, portMAX_DELAY)", telegram)
+        self.assertIn("return bits & OUTBOUND_IDLE ? error", telegram)
+        self.assertIn("static uint32_t s_pending", telegram)
+        self.assertIn("pending_complete();", telegram)
+        self.assertNotIn("xSemaphoreTake(s_enqueue_mutex, portMAX_DELAY) == pdTRUE) {\n                if (uxQueueMessagesWaiting", telegram)
+        self.assertIn("close_connection(session);", net)
+        self.assertIn("error = esp_http_client_open(session->handle", net)
+        self.assertIn("s_inflight[index] = true", scheduler)
+        self.assertIn("mp_scheduler_complete(uint32_t id, bool success)", scheduler)
+        self.assertIn("mp_scheduler_complete(message.schedule_id, success)", agent)
+        self.assertIn("delivery = s_flush(portMAX_DELAY)", agent)
+        self.assertIn("scheduled for %s", tools)
+
 
 if __name__ == "__main__":
     unittest.main()

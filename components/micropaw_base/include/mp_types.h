@@ -37,6 +37,7 @@ typedef struct {
     char chat_id[MP_CHAT_ID_LEN];
     char text[MP_MESSAGE_LEN];
     int64_t queued_us;
+    uint32_t schedule_id;
     bool proactive;
 } mp_message_t;
 
@@ -47,4 +48,4 @@ typedef struct {
 typedef esp_err_t (*mp_send_fn)(const char *chat_id, const char *text);
 typedef esp_err_t (*mp_flush_fn)(TickType_t timeout);
 typedef void (*mp_finish_fn)(const char *chat_id);
-typedef esp_err_t (*mp_schedule_emit_fn)(const char *chat_id, const char *text);
+typedef esp_err_t (*mp_schedule_emit_fn)(uint32_t id, const char *chat_id, const char *text);
