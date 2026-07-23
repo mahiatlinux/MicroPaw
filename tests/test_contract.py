@@ -119,6 +119,13 @@ class FirmwareContractTest(unittest.TestCase):
         self.assertIn("espressif/idf:v6.0.2", workflow)
         self.assertIn("MICROPAW_SIGNING_KEY_B64", workflow)
         self.assertIn("espsecure verify-signature", workflow)
+        self.assertIn("micropaw-usb.hex", workflow)
+        self.assertIn("push_config.py", workflow)
+        self.assertIn("sha256sum", workflow)
+        self.assertIn("gh release create", workflow)
+        self.assertIn("--verify-tag", workflow)
+        self.assertIn("write-flash 0x0", source("scripts/install.sh"))
+        self.assertIn("Get-FileHash", source("scripts/install.ps1"))
         self.assertIn("CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y", defaults)
         self.assertIn("CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y", defaults)
 

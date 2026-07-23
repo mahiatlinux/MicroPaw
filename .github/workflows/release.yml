@@ -3,30 +3,80 @@ name: Signed release
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
+  installers:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh -n scripts/install.sh
+      - shell: pwsh
+        run: "[scriptblock]::Create((Get-Content scripts/install.ps1 -Raw)) | Out-Null"
+      - run: python3 -m py_compile scripts/push_config.py
+
   build:
     runs-on: ubuntu-latest
     container: espressif/idf:v6.0.2
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: Build signed firmware
+        with:
+          fetch-depth: 0
+      - name: Test and build
         env:
           MICROPAW_SIGNING_KEY_B64: ${{ secrets.MICROPAW_SIGNING_KEY_B64 }}
         shell: bash
         run: |
+          printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          test "$(git describe --tags --exact-match)" = "$GITHUB_REF_NAME"
+          test -n "$MICROPAW_SIGNING_KEY_B64"
           mkdir -p secrets
           trap 'rm -f secrets/micropaw_signing_key.pem' EXIT
           printf '%s' "$MICROPAW_SIGNING_KEY_B64" | base64 -d > secrets/micropaw_signing_key.pem
           chmod 600 secrets/micropaw_signing_key.pem
+          python3 -m unittest tests/test_contract.py
           idf.py build
+          idf.py -C test_apps/agent build
           espsecure verify-signature --version 2 --keyfile secrets/micropaw_signing_key.pem build/micropaw.bin
+          test "$(stat -c%s build/micropaw.bin)" -le 1835008
+          esptool --chip esp32s3 merge-bin --format hex -o micropaw-usb.hex --flash-mode dio --flash-freq 80m --flash-size 16MB 0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x1b000 build/ota_data_initial.bin 0x20000 build/micropaw.bin
           cp build/micropaw.bin micropaw.bin
-      - name: Publish firmware
-        uses: softprops/action-gh-release@v2
+          cp scripts/install.sh install.sh
+          cp scripts/install.ps1 install.ps1
+          cp scripts/push_config.py push_config.py
+          sha256sum micropaw.bin micropaw-usb.hex install.sh install.ps1 push_config.py > SHA256SUMS
+      - uses: actions/upload-artifact@v4
         with:
-          files: micropaw.bin
+          name: release-assets
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            micropaw.bin
+            micropaw-usb.hex
+            install.sh
+            install.ps1
+            push_config.py
+            SHA256SUMS
+
+  release:
+    needs:
+      - installers
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --latest --fail-on-no-commits --title "MicroPaw ${GITHUB_REF_NAME#v}"
