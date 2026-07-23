@@ -8,16 +8,26 @@ on:
 permissions: {}
 
 jobs:
-  installers:
+  posix:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
       - run: sh -n scripts/install.sh
+      - run: python3 tests/test_push_config.py
+
+  powershell:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
       - shell: pwsh
-        run: "[scriptblock]::Create((Get-Content scripts/install.ps1 -Raw)) | Out-Null"
-      - run: python3 -m py_compile scripts/push_config.py
+        run: |
+          [scriptblock]::Create((Get-Content scripts/install.ps1 -Raw)) | Out-Null
+          [scriptblock]::Create((Get-Content scripts/push_config.ps1 -Raw)) | Out-Null
+          [IO.Ports.SerialPort] | Out-Null
 
   build:
     runs-on: ubuntu-latest
@@ -52,7 +62,8 @@ jobs:
           cp scripts/install.sh install.sh
           cp scripts/install.ps1 install.ps1
           cp scripts/push_config.py push_config.py
-          sha256sum micropaw.bin micropaw-usb.hex install.sh install.ps1 push_config.py > SHA256SUMS
+          cp scripts/push_config.ps1 push_config.ps1
+          sha256sum micropaw.bin micropaw-usb.hex install.sh install.ps1 push_config.py push_config.ps1 > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: release-assets
@@ -64,11 +75,13 @@ jobs:
             install.sh
             install.ps1
             push_config.py
+            push_config.ps1
             SHA256SUMS
 
   release:
     needs:
-      - installers
+      - posix
+      - powershell
       - build
     runs-on: ubuntu-latest
     permissions:

@@ -55,16 +55,16 @@ timezone = "NZST-12NZDT,M9.5.0,M4.1.0/3"
 After the first flash, download the configuration tool and push the TOML file over USB. On macOS or Linux:
 
 ```sh
-curl -fsSLO https://github.com/mahiatlinux/MicroPaw/releases/latest/download/push_config.py && python3 push_config.py PORT secrets/credentials.toml --reboot
+curl -fsSLO https://github.com/mahiatlinux/MicroPaw/releases/latest/download/push_config.py && python3 push_config.py secrets/credentials.toml --reboot
 ```
 
 In PowerShell:
 
 ```powershell
-irm https://github.com/mahiatlinux/MicroPaw/releases/latest/download/push_config.py -OutFile push_config.py; py -3 .\push_config.py PORT .\secrets\credentials.toml --reboot
+$push = [scriptblock]::Create((irm https://github.com/mahiatlinux/MicroPaw/releases/latest/download/push_config.ps1)); & $push .\secrets\credentials.toml -Reboot
 ```
 
-The TOML file stays on the computer. `allowed` runs Gmail or Calendar actions immediately, `permission` asks through Telegram, and `disabled` turns the tool off.
+The uploaders use only Python's standard library on macOS and Linux, and built-in PowerShell APIs on Windows. They find the port when one matching device is connected; use `--port PORT` or `-Port PORT` when needed. The TOML file stays on the computer. `allowed` runs Gmail or Calendar actions immediately, `permission` asks through Telegram, and `disabled` turns the tool off.
 
 The agent has no fixed tool-call or page-count limit. Gmail and Calendar listings return numbered pages of up to 20 records with a continuation token. The agent can keep paging until the task is done. Device request capacity and external API limits still apply.
 
