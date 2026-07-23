@@ -1,6 +1,11 @@
 $ErrorActionPreference = "Stop"
 $baseUrl = "https://github.com/mahiatlinux/MicroPaw/releases/latest/download"
-$pythonCommand = if (Get-Command py -ErrorAction SilentlyContinue) { "py" } elseif (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { throw "Python 3.10 or newer is required." }
+$pythonCommand = @("py", "python3.14", "python3.13", "python3.12", "python3.11", "python3.10", "python3", "python") |
+    Where-Object { Get-Command $_ -ErrorAction SilentlyContinue } |
+    Select-Object -First 1
+if (-not $pythonCommand) {
+    throw "Python 3.10 or newer is required."
+}
 $pythonPrefix = if ($pythonCommand -eq "py") { @("-3") } else { @() }
 
 function Invoke-Python([string[]]$Arguments) {
