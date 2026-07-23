@@ -8,6 +8,22 @@ MicroPaw is a personal assistant that runs on an ESP32-S3. It supports Telegram,
 
 The supported target is an ESP32-S3 N16R8 with 8 MB octal PSRAM and 16 MB flash.
 
+## Install
+
+Connect the ESP32-S3 over USB. On macOS or Linux, run:
+
+```sh
+curl -fsSL https://github.com/mahiatlinux/MicroPaw/releases/latest/download/install.sh | sh
+```
+
+In PowerShell, run:
+
+```powershell
+irm https://github.com/mahiatlinux/MicroPaw/releases/latest/download/install.ps1 | iex
+```
+
+The installer needs Python 3.10 or newer. It downloads the latest signed release, checks its SHA-256 hash, installs esptool, finds the connected ESP32-S3 and flashes it. Existing credentials, memory, jobs and conversation context stay intact. Set `MICROPAW_PORT` when more than one serial device is connected. If automatic reset fails, hold BOOT while the installer starts.
+
 ## Build
 
 ```sh
@@ -36,10 +52,16 @@ calendar_permission = "permission"
 timezone = "NZST-12NZDT,M9.5.0,M4.1.0/3"
 ```
 
-Push it to the ESP and reboot:
+After the first flash, download the configuration tool and push the TOML file over USB. On macOS or Linux:
 
 ```sh
-python scripts/push_config.py PORT secrets/credentials.toml --reboot
+curl -fsSLO https://github.com/mahiatlinux/MicroPaw/releases/latest/download/push_config.py && python3 push_config.py PORT secrets/credentials.toml --reboot
+```
+
+In PowerShell:
+
+```powershell
+irm https://github.com/mahiatlinux/MicroPaw/releases/latest/download/push_config.py -OutFile push_config.py; py -3 .\push_config.py PORT .\secrets\credentials.toml --reboot
 ```
 
 The TOML file stays on the computer. `allowed` runs Gmail or Calendar actions immediately, `permission` asks through Telegram, and `disabled` turns the tool off.
@@ -52,7 +74,7 @@ Gmail supports numbered search and listing, message reads, send, scheduled send,
 
 Persistent memory holds eight durable entries of up to 1,023 bytes each. Separate facts should use separate entries.
 
-Firmware builds are signed with the RSA-3072 key at `secrets/micropaw_signing_key.pem`. GitHub Actions reads the same key from `MICROPAW_SIGNING_KEY_B64`. Install the first signed image over USB before using OTA updates.
+Firmware builds are signed with the RSA-3072 key at `secrets/micropaw_signing_key.pem`. GitHub Actions reads the same key from `MICROPAW_SIGNING_KEY_B64`. Each versioned release includes the OTA image, sparse USB image, installers and SHA-256 checksums.
 
 Google OAuth needs these scopes in one offline grant:
 
