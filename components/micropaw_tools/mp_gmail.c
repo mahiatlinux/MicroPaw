@@ -41,14 +41,20 @@ EXT_RAM_BSS_ATTR static char s_encoded[2048];
 EXT_RAM_BSS_ATTR static char s_email_header[1024];
 EXT_RAM_BSS_ATTR static char s_encode_buffer[2048];
 EXT_RAM_BSS_ATTR static char s_decoded[MP_TOOL_RESULT_LEN];
+EXT_RAM_BSS_ATTR static char s_batch_body[12288];
 EXT_RAM_BSS_ATTR static gmail_id_t s_ids[GMAIL_PAGE_SIZE];
 EXT_RAM_BSS_ATTR static char s_next_page[1024];
 
 static bool gmail_header(const char *payload, size_t length, const char *wanted,
                          char *output, size_t size);
 static size_t gmail_ids(const char *response);
-static esp_err_t gmail_metadata(const char *id, uint32_t number, mp_writer_t *writer,
-                                char *output, size_t size);
+static bool gmail_metadata(const char *id, const char *json, size_t length, uint32_t number,
+                           mp_writer_t *writer);
+static bool batch_boundary(const char *content_type, char *output, size_t size);
+static bool batch_part(const char *multipart, const char *boundary, size_t index,
+                       const char **body, size_t *body_length, int *status);
+static esp_err_t gmail_metadata_batch(size_t count, mp_writer_t *writer,
+                                      char *output, size_t size);
 static int base64_value(char value);
 static esp_err_t base64_decode(const char *input, size_t length, char *output, size_t size);
 static bool gmail_find_part(const char *part, size_t length, const char *mime,
@@ -124,20 +130,9 @@ static size_t gmail_ids(const char *response)
     return count;
 }
 
-static esp_err_t gmail_metadata(const char *id, uint32_t number, mp_writer_t *writer,
-                                char *output, size_t size)
+static bool gmail_metadata(const char *id, const char *json, size_t length, uint32_t number,
+                           mp_writer_t *writer)
 {
-    snprintf(s_url, sizeof(s_url),
-             "https://gmail.googleapis.com/gmail/v1/users/me/messages/%s?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date",
-             id);
-    mp_http_response_t response;
-    esp_err_t result = mp_google_request(HTTP_METHOD_GET, s_url, NULL, 0, NULL, NULL, 20000,
-                                         "application/json", &response, output, size);
-    if (result != ESP_OK) {
-        return result;
-    }
-    const char *json = mp_google_response();
-    size_t length = strlen(json);
     const char *payload;
     size_t payload_length;
     char from[256] = "";
@@ -153,6 +148,109 @@ static esp_err_t gmail_metadata(const char *id, uint32_t number, mp_writer_t *wr
     mp_writer_format(writer, "%lu. %s\nID: %s\nFrom: %s\nDate: %s\n%s\n\n",
                      (unsigned long)number, subject[0] ? subject : "(no subject)", id,
                      from[0] ? from : "(unknown)", date[0] ? date : "(unknown)", snippet);
+    return writer->valid;
+}
+
+static bool batch_boundary(const char *content_type, char *output, size_t size)
+{
+    const char *value = strstr(content_type, "boundary=");
+    if (!value) {
+        return false;
+    }
+    value += 9;
+    char quote = *value == '"' ? *value++ : 0;
+    const char *end = value;
+    while (*end && ((quote && *end != quote) || (!quote && *end != ';' && *end != ' '))) {
+        end++;
+    }
+    size_t length = end - value;
+    if (!length || length >= size) {
+        return false;
+    }
+    memcpy(output, value, length);
+    output[length] = 0;
+    return true;
+}
+
+static bool batch_part(const char *multipart, const char *boundary, size_t index,
+                       const char **body, size_t *body_length, int *status)
+{
+    char marker[48];
+    snprintf(marker, sizeof(marker), "<response-mp-%lu>", (unsigned long)index);
+    const char *part = strstr(multipart, marker);
+    if (!part) {
+        snprintf(marker, sizeof(marker), "<mp-%lu>", (unsigned long)index);
+        part = strstr(multipart, marker);
+    }
+    if (!part) {
+        return false;
+    }
+    const char *status_line = strstr(part, "\r\n\r\n");
+    if (!status_line || sscanf(status_line + 4, "HTTP/%*s %d", status) != 1) {
+        return false;
+    }
+    *body = strstr(status_line + 4, "\r\n\r\n");
+    if (!*body) {
+        return false;
+    }
+    *body += 4;
+    char delimiter[96];
+    snprintf(delimiter, sizeof(delimiter), "\r\n--%s", boundary);
+    const char *end = strstr(*body, delimiter);
+    if (!end) {
+        return false;
+    }
+    *body_length = end - *body;
+    return true;
+}
+
+static esp_err_t gmail_metadata_batch(size_t count, mp_writer_t *writer,
+                                      char *output, size_t size)
+{
+    static const char boundary[] = "micropaw_batch";
+    mp_writer_t batch;
+    mp_writer_init(&batch, s_batch_body, sizeof(s_batch_body));
+    for (size_t index = 0; index < count; index++) {
+        mp_writer_format(
+            &batch,
+            "--%s\r\nContent-Type: application/http\r\nContent-ID: <mp-%lu>\r\n\r\n"
+            "GET /gmail/v1/users/me/messages/%s?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&fields=id,snippet,payload(headers) HTTP/1.1\r\n\r\n",
+            boundary, (unsigned long)index, s_ids[index].id);
+    }
+    mp_writer_format(&batch, "--%s--\r\n", boundary);
+    if (!batch.valid) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    char content_type[64];
+    snprintf(content_type, sizeof(content_type), "multipart/mixed; boundary=%s", boundary);
+    mp_http_response_t response;
+    esp_err_t result = mp_google_request(
+        HTTP_METHOD_POST, "https://gmail.googleapis.com/batch",
+        s_batch_body, batch.length, NULL, NULL, 30000, content_type,
+        "multipart/mixed", &response, output, size);
+    if (result != ESP_OK) {
+        return result;
+    }
+    char response_boundary[80];
+    if (!batch_boundary(response.content_type, response_boundary, sizeof(response_boundary))) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    const char *multipart = mp_google_response();
+    for (size_t index = 0; index < count; index++) {
+        const char *body;
+        size_t body_length;
+        int status;
+        if (!batch_part(multipart, response_boundary, index, &body, &body_length, &status)) {
+            mp_writer_format(writer, "%lu. ID: %s\nError: missing Gmail batch response.\n\n",
+                             (unsigned long)index + 1, s_ids[index].id);
+        } else if (status < 200 || status >= 300) {
+            mp_writer_format(writer, "%lu. ID: %s\nError: Gmail batch HTTP status %d.\n\n",
+                             (unsigned long)index + 1, s_ids[index].id, status);
+        } else if (!gmail_metadata(s_ids[index].id, body, body_length,
+                                   (uint32_t)index + 1, writer)) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+    }
     return writer->valid ? ESP_OK : ESP_ERR_INVALID_SIZE;
 }
 
@@ -256,7 +354,8 @@ static esp_err_t gmail_attachment(const char *message_id, const char *attachment
              message_id, s_encoded);
     mp_http_response_t response;
     esp_err_t result = mp_google_request(HTTP_METHOD_GET, s_url, NULL, 0, NULL, NULL, 20000,
-                                         "application/json", &response, output, size);
+                                         "application/json", "application/json",
+                                         &response, output, size);
     if (result != ESP_OK) {
         return result;
     }
@@ -320,7 +419,7 @@ static esp_err_t gmail_send(const mp_email_t *email, char *output, size_t size)
     esp_err_t result = mp_google_request(
         HTTP_METHOD_POST, "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
         NULL, base64url_size(raw_size) + 10, email_write, &context, 60000,
-        "application/json", &response, output, size);
+        "application/json", "application/json", &response, output, size);
     if (result == ESP_OK) {
         strlcpy(output, "Email sent.", size);
     }
@@ -339,7 +438,7 @@ static esp_err_t gmail_search(const char *query, const char *page_token, uint32_
     mp_writer_t url;
     mp_writer_init(&url, s_url, sizeof(s_url));
     mp_writer_format(&url,
-                     "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=%lu",
+                     "https://gmail.googleapis.com/gmail/v1/users/me/messages?fields=nextPageToken,messages(id)&maxResults=%lu",
                      (unsigned long)page_size);
     if (query[0]) {
         mp_url_encode(query, s_encoded, sizeof(s_encoded));
@@ -354,7 +453,8 @@ static esp_err_t gmail_search(const char *query, const char *page_token, uint32_
     }
     mp_http_response_t response;
     esp_err_t result = mp_google_request(HTTP_METHOD_GET, s_url, NULL, 0, NULL, NULL, 20000,
-                                         "application/json", &response, output, size);
+                                         "application/json", "application/json",
+                                         &response, output, size);
     if (result != ESP_OK) {
         return result;
     }
@@ -365,11 +465,9 @@ static esp_err_t gmail_search(const char *query, const char *page_token, uint32_
     }
     mp_writer_t writer;
     mp_writer_init(&writer, output, size);
-    for (size_t index = 0; index < count; index++) {
-        result = gmail_metadata(s_ids[index].id, (uint32_t)index + 1, &writer, output, size);
-        if (result != ESP_OK) {
-            return result;
-        }
+    result = gmail_metadata_batch(count, &writer, output, size);
+    if (result != ESP_OK) {
+        return result;
     }
     if (s_next_page[0]) {
         mp_writer_format(&writer, "Next page token: %s", s_next_page);
@@ -388,7 +486,8 @@ static esp_err_t gmail_get(const char *id, char *output, size_t size)
              "https://gmail.googleapis.com/gmail/v1/users/me/messages/%s?format=full", id);
     mp_http_response_t response;
     esp_err_t result = mp_google_request(HTTP_METHOD_GET, s_url, NULL, 0, NULL, NULL, 30000,
-                                         "application/json", &response, output, size);
+                                         "application/json", "application/json",
+                                         &response, output, size);
     if (result != ESP_OK) {
         return result;
     }
@@ -479,7 +578,8 @@ static esp_err_t gmail_modify(const char *id, const char *action, char *output, 
              "https://gmail.googleapis.com/gmail/v1/users/me/messages/%s/modify", id);
     mp_http_response_t response;
     esp_err_t result = mp_google_request(HTTP_METHOD_POST, s_url, body, strlen(body), NULL, NULL,
-                                         20000, "application/json", &response, output, size);
+                                         20000, "application/json", "application/json",
+                                         &response, output, size);
     if (result == ESP_OK) {
         snprintf(output, size, "Email action completed: %s.", action);
     }
@@ -505,7 +605,8 @@ static esp_err_t gmail_move(const char *id, const char *operation, char *output,
              "https://gmail.googleapis.com/gmail/v1/users/me/messages/%s/%s", id, operation);
     mp_http_response_t response;
     esp_err_t result = mp_google_request(HTTP_METHOD_POST, s_url, NULL, 0, NULL, NULL, 20000,
-                                         "application/json", &response, output, size);
+                                         "application/json", "application/json",
+                                         &response, output, size);
     if (result == ESP_OK) {
         snprintf(output, size, "Email %s completed.", operation);
     }

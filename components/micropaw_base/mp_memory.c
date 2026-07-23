@@ -6,6 +6,7 @@
 #include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "mp_json.h"
 #include "nvs.h"
 
 #define MEMORY_MAGIC 0x4d504d32U
@@ -48,12 +49,8 @@ esp_err_t mp_memory_init(void);
 esp_err_t mp_memory_reset(void);
 esp_err_t mp_memory_save(const char *text);
 void mp_memory_format(char *output, size_t size);
-esp_err_t mp_history_add_exchange(const char *chat_id, const char *user,
-                                  const char *assistant, const char *assistant_id);
-size_t mp_history_get(const char *chat_id, char roles[][10],
-                      char texts[][MP_HISTORY_TEXT_LEN], char ids[][MP_HISTORY_ID_LEN],
-                      size_t count);
-esp_err_t mp_history_clear(const char *chat_id);
+size_t mp_history_export(char *output, size_t size);
+esp_err_t mp_history_erase(void);
 
 static esp_err_t load_blob(const char *key, void *data, size_t size)
 {
@@ -188,84 +185,43 @@ void mp_memory_format(char *output, size_t size)
     xSemaphoreGive(s_lock);
 }
 
-esp_err_t mp_history_add_exchange(const char *chat_id, const char *user,
-                                  const char *assistant, const char *assistant_id)
+size_t mp_history_export(char *output, size_t size)
 {
-    if (!chat_id || !user || !assistant || !assistant_id || !chat_id[0] || !user[0] ||
-        !assistant[0] || !assistant_id[0] || strlen(chat_id) >= MP_CHAT_ID_LEN) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (s_history.count > MP_HISTORY_SLOTS - 2) {
-        memmove(&s_history.records[0], &s_history.records[2],
-                sizeof(s_history.records[0]) * (MP_HISTORY_SLOTS - 2));
-        s_history.count -= 2;
-    }
-    history_record_t *user_record = &s_history.records[s_history.count++];
-    history_record_t *assistant_record = &s_history.records[s_history.count++];
-    memset(user_record, 0, sizeof(*user_record));
-    memset(assistant_record, 0, sizeof(*assistant_record));
-    strlcpy(user_record->chat_id, chat_id, sizeof(user_record->chat_id));
-    strlcpy(user_record->role, "user", sizeof(user_record->role));
-    strlcpy(user_record->text, user, sizeof(user_record->text));
-    strlcpy(assistant_record->chat_id, chat_id, sizeof(assistant_record->chat_id));
-    strlcpy(assistant_record->role, "assistant", sizeof(assistant_record->role));
-    strlcpy(assistant_record->text, assistant, sizeof(assistant_record->text));
-    strlcpy(assistant_record->id, assistant_id, sizeof(assistant_record->id));
-    esp_err_t error = save_blob("history", &s_history, sizeof(s_history));
-    xSemaphoreGive(s_lock);
-    return error;
-}
-
-size_t mp_history_get(const char *chat_id, char roles[][10],
-                      char texts[][MP_HISTORY_TEXT_LEN], char ids[][MP_HISTORY_ID_LEN],
-                      size_t count)
-{
-    if (!chat_id || !roles || !texts || !ids || !count) {
+    if (!output || size == 0) {
         return 0;
     }
+    mp_writer_t writer;
+    mp_writer_init(&writer, output, size);
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    size_t matched = 0;
     for (size_t index = 0; index < s_history.count; index++) {
-        if (strcmp(s_history.records[index].chat_id, chat_id) == 0) {
-            matched++;
-        }
-    }
-    size_t skip = matched > count ? matched - count : 0;
-    size_t copied = 0;
-    for (size_t index = 0; index < s_history.count && copied < count; index++) {
         history_record_t *record = &s_history.records[index];
-        if (strcmp(record->chat_id, chat_id) != 0) {
-            continue;
+        if (index) {
+            mp_writer_char(&writer, ',');
         }
-        if (skip) {
-            skip--;
-            continue;
+        mp_writer_raw(&writer, "{\"type\":\"message\",\"role\":");
+        mp_writer_string(&writer, record->role);
+        if (strcmp(record->role, "assistant") == 0) {
+            mp_writer_raw(&writer, ",\"id\":");
+            mp_writer_string(&writer, record->id);
+            mp_writer_raw(&writer,
+                          ",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":");
+            mp_writer_string(&writer, record->text);
+            mp_writer_raw(&writer, ",\"annotations\":[]}]}");
+        } else {
+            mp_writer_raw(&writer, ",\"content\":[{\"type\":\"input_text\",\"text\":");
+            mp_writer_string(&writer, record->text);
+            mp_writer_raw(&writer, "}]}");
         }
-        strlcpy(roles[copied], record->role, 10);
-        strlcpy(texts[copied], record->text, MP_HISTORY_TEXT_LEN);
-        strlcpy(ids[copied], record->id, MP_HISTORY_ID_LEN);
-        copied++;
     }
     xSemaphoreGive(s_lock);
-    return copied;
+    return writer.valid ? writer.length : 0;
 }
 
-esp_err_t mp_history_clear(const char *chat_id)
+esp_err_t mp_history_erase(void)
 {
-    if (!chat_id || !chat_id[0]) {
-        return ESP_ERR_INVALID_ARG;
-    }
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    size_t kept = 0;
-    for (size_t index = 0; index < s_history.count; index++) {
-        if (strcmp(s_history.records[index].chat_id, chat_id) != 0) {
-            s_history.records[kept++] = s_history.records[index];
-        }
-    }
-    memset(&s_history.records[kept], 0,
-           sizeof(s_history.records[0]) * (MP_HISTORY_SLOTS - kept));
-    s_history.count = kept;
+    memset(&s_history, 0, sizeof(s_history));
+    s_history.magic = HISTORY_MAGIC;
     esp_err_t error = save_blob("history", &s_history, sizeof(s_history));
     xSemaphoreGive(s_lock);
     return error;

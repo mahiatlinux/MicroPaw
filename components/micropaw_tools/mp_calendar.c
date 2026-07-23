@@ -88,7 +88,7 @@ static esp_err_t calendar_list(const char *query, const char *time_min, const ch
     mp_writer_t url;
     mp_writer_init(&url, s_url, sizeof(s_url));
     mp_writer_format(&url,
-                     "https://www.googleapis.com/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime&showDeleted=false&maxResults=%lu",
+                     "https://www.googleapis.com/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime&showDeleted=false&fields=nextPageToken,items(id,summary,start,end,status)&maxResults=%lu",
                      (unsigned long)page_size);
     if (query[0]) {
         mp_url_encode(query, s_encoded, sizeof(s_encoded));
@@ -111,7 +111,8 @@ static esp_err_t calendar_list(const char *query, const char *time_min, const ch
     }
     mp_http_response_t response;
     esp_err_t result = mp_google_request(HTTP_METHOD_GET, s_url, NULL, 0, NULL, NULL, 20000,
-                                         "application/json", &response, output, size);
+                                         "application/json", "application/json",
+                                         &response, output, size);
     if (result != ESP_OK) {
         return result;
     }
@@ -154,7 +155,8 @@ static esp_err_t calendar_get(const char *id, char *output, size_t size)
              "https://www.googleapis.com/calendar/v3/calendars/primary/events/%s", s_encoded);
     mp_http_response_t response;
     esp_err_t result = mp_google_request(HTTP_METHOD_GET, s_url, NULL, 0, NULL, NULL, 20000,
-                                         "application/json", &response, output, size);
+                                         "application/json", "application/json",
+                                         &response, output, size);
     if (result != ESP_OK) {
         return result;
     }
@@ -212,7 +214,7 @@ static esp_err_t calendar_remove(const char *id, const char *send_updates,
              encoded_id, encoded_updates);
     mp_http_response_t response;
     esp_err_t result = mp_google_request(HTTP_METHOD_DELETE, s_url, NULL, 0, NULL, NULL, 20000,
-                                         NULL, &response, output, size);
+                                         "application/json", NULL, &response, output, size);
     if (result == ESP_OK) {
         strlcpy(output, "Calendar event deleted.", size);
     }
@@ -258,7 +260,8 @@ static esp_err_t calendar_write(esp_http_client_method_t method, const char *url
     }
     mp_http_response_t response;
     esp_err_t result = mp_google_request(method, url, s_body, writer.length, NULL, NULL, 20000,
-                                         "application/json", &response, output, size);
+                                         "application/json", "application/json",
+                                         &response, output, size);
     if (result == ESP_OK) {
         strlcpy(output, method == HTTP_METHOD_POST ? "Calendar event created." :
                 "Calendar event updated.", size);
