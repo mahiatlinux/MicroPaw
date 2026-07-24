@@ -60,6 +60,7 @@ class FirmwareContractTest(unittest.TestCase):
 
     def test_agent_batch_and_progress_contract(self):
         agent = source("components/micropaw_agent/mp_agent.c")
+        policy = source("components/micropaw_agent/mp_agent_policy.c")
         llm = source("components/micropaw_agent/mp_llm.c")
         prompt = source("prompts/system.txt")
         self.assertIn('\\"parallel_tool_calls\\":true', agent)
@@ -67,15 +68,63 @@ class FirmwareContractTest(unittest.TestCase):
         self.assertIn("append_tool_exchange(call, s_tool_output)", agent)
         self.assertIn("send_progress(message->chat_id, s_result.text)", agent)
         self.assertIn("progress_fallback(&s_result)", agent)
-        self.assertIn("batch_needs_progress(&s_result)", agent)
-        self.assertIn("current_reads & write_bit", agent)
-        self.assertIn("Read the current matching state", agent)
-        self.assertIn("return \"I'll search the web for that.\"", agent)
-        self.assertIn("short, natural, task-specific progress", prompt)
-        self.assertIn("Omit progress for quick local actions", prompt)
-        self.assertIn("read the current matching state in the same turn", prompt)
+        self.assertIn("batch_slow_stage(&s_result)", agent)
+        self.assertIn("uint8_t reads_before_batch = current_reads", agent)
+        self.assertIn("required & ~reads_before_batch", agent)
+        self.assertIn("mp_agent_policy_error(call->name, missing", agent)
+        self.assertNotIn("I'll work on that now.", policy)
+        self.assertIn("A prerequisite read must finish in an earlier tool batch", prompt)
+        self.assertIn("task-specific acknowledgement", prompt)
+        self.assertIn("first batch contains only prerequisite reads", prompt)
+        self.assertIn("Keep pure reads, direct commands and completed local actions quiet", prompt)
         self.assertIn("mp_llm_parse_chunk", llm)
         self.assertIn("call->order > *offset", llm)
+
+    def test_schedule_prerequisite_contract(self):
+        agent = source("components/micropaw_agent/mp_agent.c")
+        policy = source("components/micropaw_agent/mp_agent_policy.c")
+        header = source("components/micropaw_agent/include/mp_agent_policy.h")
+        tools = source("components/micropaw_tools/mp_tools.c")
+        wifi = source("components/micropaw_net/mp_wifi.c")
+        self.assertIn("MP_AGENT_READ_TIME = 32", header)
+        self.assertIn('strcmp(name, "time_now") == 0', policy)
+        self.assertIn("return MP_AGENT_READ_TIME;", policy)
+        self.assertIn("return MP_AGENT_READ_SCHEDULE | MP_AGENT_READ_TIME;", policy)
+        self.assertIn("return MP_AGENT_READ_CALENDAR | MP_AGENT_READ_TIME;", policy)
+        self.assertIn("Call time_now, use its result, then retry %s.", policy)
+        self.assertIn("Call schedule_list and time_now, use their results", policy)
+        self.assertIn("reads_before_batch", agent)
+        self.assertIn("Device time is not synchronized. Connect to Wi-Fi and try again.", tools)
+        self.assertIn("now < 1700000000", tools)
+        self.assertIn('setenv("TZ", config->timezone, 1)', wifi)
+        self.assertIn('strftime(output, size, "%Y-%m-%dT%H:%M:%S%z"', tools)
+        add = tools[tools.index('{"schedule_add"'):tools.index('{"schedule_list"')]
+        email = tools[tools.index('{"email_schedule"'):tools.index('{"email_search"')]
+        self.assertIn("Call time_now and wait for its result", add)
+        self.assertNotIn("schedule_list", add)
+        self.assertIn("Call time_now and wait for its result", email)
+        self.assertNotIn("schedule_list", email)
+
+    def test_progress_and_oled_completion_contract(self):
+        agent = source("components/micropaw_agent/mp_agent.c")
+        policy = source("components/micropaw_agent/mp_agent_policy.c")
+        telegram = source("components/micropaw_telegram/mp_telegram.c")
+        self.assertNotIn("if (!needs_progress) {\n            s_result.text[0] = 0;", agent)
+        for text in [
+            "I'll check the time and schedule that email.",
+            "I'll check the time and set that reminder.",
+            "I'll check your reminders and update that one.",
+            "I'll handle that email.",
+            "I'll check your calendar and update it.",
+        ]:
+            self.assertIn(text, policy)
+        self.assertIn("slow_stage & ~reported_slow_stages", agent)
+        self.assertIn("fallback_sent = true", agent)
+        self.assertIn('snprintf(s_result.text, sizeof(s_result.text), "[happy] %s", fallback)', agent)
+        self.assertIn("mp_display_filter_text(s_result.text)", agent)
+        stop = telegram[telegram.index("} else if (s_current.type == OUTBOUND_TYPING_STOP)"):telegram.index("} else {", telegram.index("} else if (s_current.type == OUTBOUND_TYPING_STOP)"))]
+        self.assertIn("mp_display_response_end();", stop)
+        self.assertLess(stop.index("}"), stop.index("mp_display_response_end();"))
 
     def test_context_and_reset_contract(self):
         context = source("components/micropaw_base/include/mp_context.h")
