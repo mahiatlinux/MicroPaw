@@ -47,3 +47,8 @@ bool mp_llm_parse_chunk(mp_llm_result_t *result, const uint8_t *data, size_t siz
 esp_err_t mp_llm_parse_finish(mp_llm_result_t *result);
 const mp_llm_call_t *mp_llm_call_next(const mp_llm_result_t *result, size_t *offset);
 esp_err_t mp_llm_stream(const char *body, mp_llm_result_t *result);
+esp_err_t mp_llm_stream_image(const char *body, size_t image_offset,
+                              const uint8_t *data, size_t size,
+                              mp_llm_result_t *result);
+esp_err_t mp_llm_transcribe(const uint8_t *data, size_t size, const char *mime_type,
+                            char *output, size_t output_size);

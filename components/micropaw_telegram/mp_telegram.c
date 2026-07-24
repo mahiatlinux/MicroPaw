@@ -2,14 +2,17 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "mp_agent.h"
 #include "mp_config.h"
 #include "mp_display.h"
 #include "mp_json.h"
+#include "mp_llm.h"
 #include "mp_metrics.h"
 #include "mp_net.h"
 #include "mp_wifi.h"
@@ -20,6 +23,7 @@
 
 #define OUTBOUND_QUEUE_LENGTH 4
 #define OUTBOUND_IDLE BIT0
+#define MEDIA_ARENA_SIZE (2U * 1024U * 1024U)
 
 typedef enum {
     OUTBOUND_TEXT,
@@ -35,7 +39,17 @@ typedef struct {
     char text[3901];
 } outbound_item_t;
 
+typedef struct {
+    uint8_t *data;
+    size_t size;
+    size_t used;
+} media_collect_t;
+
 EXT_RAM_BSS_ATTR static char s_poll_response[6144];
+EXT_RAM_BSS_ATTR static char s_file_response[1024];
+EXT_RAM_BSS_ATTR static char s_media_url[1024];
+EXT_RAM_BSS_ATTR static char s_encoded_file_id[768];
+EXT_RAM_BSS_ATTR static char s_file_path[256];
 EXT_RAM_BSS_ATTR static char s_message[MP_MESSAGE_LEN];
 EXT_RAM_BSS_ATTR static char s_body[24576];
 EXT_RAM_BSS_ATTR static char s_part[3901];
@@ -59,6 +73,7 @@ static StackType_t s_sender_task_stack[CONFIG_MICROPAW_TELEGRAM_SENDER_STACK];
 static TaskHandle_t s_sender_task;
 static mp_http_session_t s_poll_session;
 static mp_http_session_t s_sender_session;
+static mp_http_session_t s_media_session;
 static int64_t s_offset;
 static esp_err_t s_delivery_error;
 static int s_send_status;
@@ -68,6 +83,19 @@ static void telegram_task(void *argument);
 static void sender_task(void *argument);
 static esp_err_t poll_once(void);
 static void process_update(const char *update, size_t length);
+static bool media_chunk(const uint8_t *data, size_t size, void *context);
+static bool media_type(const char *actual, const char *expected);
+static esp_err_t file_reference(const char *file_id, char *path, size_t path_size,
+                                size_t *file_size);
+static esp_err_t download_file(const char *file_id, uint8_t *data, size_t capacity,
+                               size_t *size, char *content_type, size_t content_type_size);
+static bool photo_reference(const char *message, size_t length, char *file_id,
+                            size_t file_id_size, size_t *file_size);
+static void process_photo(const char *id, const char *message, size_t length,
+                          int64_t queued_us);
+static void process_voice(const char *id, const char *message, size_t length,
+                          int64_t queued_us);
+static void media_error(const char *id, const char *text);
 static size_t utf8_chunk(const char *text, size_t length, size_t limit);
 static esp_err_t send_request(const char *method, const char *chat_id,
                               const char *text, size_t length);
@@ -206,17 +234,273 @@ static void process_update(const char *update, size_t length)
     if (strcmp(id, config->owner_chat_id) != 0) {
         return;
     }
+    int64_t queued_us = esp_timer_get_time();
+    const char *photo;
+    size_t photo_length;
+    const char *voice;
+    size_t voice_length;
+    if (mp_json_get_slice(message, message_length, "photo", &photo, &photo_length)) {
+        mp_telegram_typing_start(id, queued_us);
+        mp_display_agent_begin();
+        process_photo(id, message, message_length, queued_us);
+        return;
+    }
+    if (mp_json_get_slice(message, message_length, "voice", &voice, &voice_length)) {
+        mp_telegram_typing_start(id, queued_us);
+        mp_display_agent_begin();
+        process_voice(id, message, message_length, queued_us);
+        return;
+    }
     if (!mp_json_get_string(message, message_length, "text", s_message, sizeof(s_message))) {
-        mp_telegram_send(id, "Message too long for the device input buffer.");
+        mp_telegram_send(id, "Unsupported media or message too long for the device input buffer.");
         mp_telegram_typing_stop(id);
         return;
     }
-    int64_t queued_us = esp_timer_get_time();
     mp_telegram_typing_start(id, queued_us);
     if (mp_agent_submit(id, s_message, false, portMAX_DELAY) != ESP_OK) {
         mp_telegram_send(id, "MicroPaw is busy. Try again shortly.");
         mp_telegram_typing_stop(id);
     }
+}
+
+static bool media_chunk(const uint8_t *data, size_t size, void *context)
+{
+    media_collect_t *collect = context;
+    if (size > collect->size - collect->used) {
+        return false;
+    }
+    memcpy(collect->data + collect->used, data, size);
+    collect->used += size;
+    return true;
+}
+
+static bool media_type(const char *actual, const char *expected)
+{
+    size_t length = strlen(expected);
+    return strncasecmp(actual, expected, length) == 0 &&
+           (actual[length] == 0 || actual[length] == ';');
+}
+
+static esp_err_t file_reference(const char *file_id, char *path, size_t path_size,
+                                size_t *file_size)
+{
+    mp_url_encode(file_id, s_encoded_file_id, sizeof(s_encoded_file_id));
+    snprintf(s_media_url, sizeof(s_media_url),
+             "https://api.telegram.org/bot%s/getFile?file_id=%s",
+             mp_config_get()->telegram_token, s_encoded_file_id);
+    mp_http_request_t request = {
+        .url = s_media_url,
+        .method = HTTP_METHOD_GET,
+        .response_limit = sizeof(s_file_response) - 1,
+        .timeout_ms = 20000,
+        .buffer_size = 1024,
+        .accepted_content_types = "application/json"
+    };
+    mp_http_response_t response;
+    esp_err_t error = mp_http_session_collect(&s_media_session, &request, s_file_response,
+                                              sizeof(s_file_response), &response);
+    const char *result;
+    size_t result_length;
+    bool ok;
+    int64_t parsed_size = 0;
+    if (error != ESP_OK || response.status != 200 || response.truncated ||
+        !mp_json_get_bool(s_file_response, strlen(s_file_response), "ok", &ok) || !ok ||
+        !mp_json_get_slice(s_file_response, strlen(s_file_response), "result",
+                           &result, &result_length) ||
+        !mp_json_get_string(result, result_length, "file_path", path, path_size)) {
+        return error == ESP_OK ? ESP_ERR_INVALID_RESPONSE : error;
+    }
+    mp_json_get_int64(result, result_length, "file_size", &parsed_size);
+    if (parsed_size < 0 || (uint64_t)parsed_size > SIZE_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    *file_size = (size_t)parsed_size;
+    return strstr(path, "..") || strpbrk(path, "?#") ? ESP_ERR_INVALID_RESPONSE : ESP_OK;
+}
+
+static esp_err_t download_file(const char *file_id, uint8_t *data, size_t capacity,
+                               size_t *size, char *content_type, size_t content_type_size)
+{
+    size_t reported_size;
+    esp_err_t error = file_reference(file_id, s_file_path, sizeof(s_file_path),
+                                     &reported_size);
+    if (error != ESP_OK) {
+        return error;
+    }
+    if (reported_size > capacity) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    snprintf(s_media_url, sizeof(s_media_url),
+             "https://api.telegram.org/file/bot%s/%s",
+             mp_config_get()->telegram_token, s_file_path);
+    media_collect_t collect = {.data = data, .size = capacity};
+    mp_http_request_t request = {
+        .url = s_media_url,
+        .method = HTTP_METHOD_GET,
+        .response_limit = capacity,
+        .timeout_ms = 60000,
+        .buffer_size = 4096,
+        .accepted_content_types = "image/jpeg,image/png,image/webp,image/gif,audio/ogg,audio/opus,application/octet-stream"
+    };
+    mp_http_response_t response;
+    int64_t started = esp_timer_get_time();
+    error = mp_http_session_stream(&s_media_session, &request, media_chunk, &collect, &response);
+    mp_metrics_media_download((uint32_t)((esp_timer_get_time() - started) / 1000),
+                              collect.used);
+    if (error != ESP_OK || response.status != 200 || response.truncated ||
+        !collect.used || (reported_size && reported_size != collect.used)) {
+        return error == ESP_OK ? ESP_ERR_INVALID_RESPONSE : error;
+    }
+    *size = collect.used;
+    strlcpy(content_type, response.content_type, content_type_size);
+    return ESP_OK;
+}
+
+static bool photo_reference(const char *message, size_t length, char *file_id,
+                            size_t file_id_size, size_t *file_size)
+{
+    const char *array;
+    size_t array_length;
+    if (!mp_json_get_slice(message, length, "photo", &array, &array_length)) {
+        return false;
+    }
+    size_t offset = 0;
+    const char *item;
+    size_t item_length;
+    bool found = false;
+    while (mp_json_next(array, array_length, &offset, &item, &item_length)) {
+        int64_t parsed_size = 0;
+        if (mp_json_get_string(item, item_length, "file_id", file_id, file_id_size)) {
+            mp_json_get_int64(item, item_length, "file_size", &parsed_size);
+            if (parsed_size < 0 || (uint64_t)parsed_size > SIZE_MAX) {
+                return false;
+            }
+            *file_size = (size_t)parsed_size;
+            found = true;
+        }
+    }
+    return found;
+}
+
+static void process_photo(const char *id, const char *message, size_t length,
+                          int64_t queued_us)
+{
+    (void)queued_us;
+    char file_id[256];
+    size_t file_size;
+    if (!photo_reference(message, length, file_id, sizeof(file_id), &file_size)) {
+        media_error(id, "This Telegram photo is invalid.");
+        return;
+    }
+    if (file_size > MEDIA_ARENA_SIZE) {
+        media_error(id, "Telegram photos are limited to 2 MiB on this device.");
+        return;
+    }
+    uint8_t *arena = heap_caps_malloc(MEDIA_ARENA_SIZE,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!arena) {
+        media_error(id, "There is not enough PSRAM to process this photo.");
+        return;
+    }
+    char mime_type[32];
+    size_t downloaded;
+    esp_err_t error = download_file(file_id, arena, MEDIA_ARENA_SIZE, &downloaded,
+                                    mime_type, sizeof(mime_type));
+    if (error == ESP_OK && media_type(mime_type, "application/octet-stream")) {
+        strlcpy(mime_type, "image/jpeg", sizeof(mime_type));
+    } else if (error == ESP_OK && media_type(mime_type, "image/jpeg")) {
+        strlcpy(mime_type, "image/jpeg", sizeof(mime_type));
+    } else if (error == ESP_OK && media_type(mime_type, "image/png")) {
+        strlcpy(mime_type, "image/png", sizeof(mime_type));
+    } else if (error == ESP_OK && media_type(mime_type, "image/webp")) {
+        strlcpy(mime_type, "image/webp", sizeof(mime_type));
+    } else if (error == ESP_OK && media_type(mime_type, "image/gif")) {
+        strlcpy(mime_type, "image/gif", sizeof(mime_type));
+    } else if (error == ESP_OK) {
+        error = ESP_ERR_NOT_SUPPORTED;
+    }
+    if (error != ESP_OK) {
+        heap_caps_free(arena);
+        media_error(id, error == ESP_ERR_INVALID_SIZE ?
+                    "Telegram photos are limited to 2 MiB on this device." :
+                    "This Telegram photo could not be downloaded or is unsupported.");
+        return;
+    }
+    s_message[0] = 0;
+    mp_json_get_string(message, length, "caption", s_message, sizeof(s_message));
+    error = mp_agent_submit_image_bytes_wait(id, s_message, arena, downloaded, mime_type);
+    heap_caps_free(arena);
+    if (error != ESP_OK) {
+        mp_metrics_error("telegram_photo", error);
+    }
+}
+
+static void process_voice(const char *id, const char *message, size_t length,
+                          int64_t queued_us)
+{
+    (void)queued_us;
+    const char *voice;
+    size_t voice_length;
+    char file_id[256];
+    int64_t parsed_size = 0;
+    if (!mp_json_get_slice(message, length, "voice", &voice, &voice_length) ||
+        !mp_json_get_string(voice, voice_length, "file_id", file_id, sizeof(file_id))) {
+        media_error(id, "This Telegram voice note is invalid.");
+        return;
+    }
+    mp_json_get_int64(voice, voice_length, "file_size", &parsed_size);
+    if (parsed_size < 0 || (uint64_t)parsed_size > MEDIA_ARENA_SIZE) {
+        media_error(id, "Telegram voice notes are limited to 2 MiB on this device.");
+        return;
+    }
+    if (strcmp(mp_config_get()->llm_provider, "openai_compatible") == 0) {
+        media_error(id, "Voice transcription is unsupported for custom Responses endpoints.");
+        return;
+    }
+    uint8_t *arena = heap_caps_malloc(MEDIA_ARENA_SIZE,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!arena) {
+        media_error(id, "There is not enough PSRAM to process this voice note.");
+        return;
+    }
+    char mime_type[32];
+    size_t downloaded;
+    esp_err_t error = download_file(file_id, arena, MEDIA_ARENA_SIZE, &downloaded,
+                                    mime_type, sizeof(mime_type));
+    if (error == ESP_OK && media_type(mime_type, "application/octet-stream")) {
+        strlcpy(mime_type, "audio/ogg", sizeof(mime_type));
+    } else if (error == ESP_OK && (media_type(mime_type, "audio/ogg") ||
+                                   media_type(mime_type, "audio/opus"))) {
+        strlcpy(mime_type, "audio/ogg", sizeof(mime_type));
+    } else if (error == ESP_OK) {
+        error = ESP_ERR_NOT_SUPPORTED;
+    }
+    if (error == ESP_OK) {
+        int64_t started = esp_timer_get_time();
+        error = mp_llm_transcribe(arena, downloaded, mime_type,
+                                  s_message, sizeof(s_message));
+        mp_metrics_transcription((uint32_t)((esp_timer_get_time() - started) / 1000));
+    } else if (error == ESP_OK) {
+        error = ESP_ERR_NOT_SUPPORTED;
+    }
+    heap_caps_free(arena);
+    if (error != ESP_OK) {
+        mp_metrics_error("transcription", error);
+        media_error(id, error == ESP_ERR_INVALID_SIZE ?
+                    "Telegram voice notes are limited to 2 MiB on this device." :
+                    "The voice note could not be transcribed.");
+        return;
+    }
+    if (mp_agent_submit(id, s_message, false, portMAX_DELAY) != ESP_OK) {
+        media_error(id, "MicroPaw is busy. Try again shortly.");
+    }
+}
+
+static void media_error(const char *id, const char *text)
+{
+    mp_telegram_send(id, text);
+    mp_telegram_typing_stop(id);
+    mp_display_agent_end();
 }
 
 static size_t utf8_chunk(const char *text, size_t length, size_t limit)

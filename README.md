@@ -44,6 +44,8 @@ llm_provider = "openrouter"
 llm_api_key = "API_KEY"
 llm_model = "openai/gpt-5.6-luna"
 llm_max_output_tokens = "32768"
+transcription_model = ""
+personality = ""
 google_client_id = "CLIENT_ID"
 google_client_secret = "CLIENT_SECRET"
 google_refresh_token = "REFRESH_TOKEN"
@@ -53,6 +55,8 @@ instagram_owner_username = "OWNER_USERNAME"
 email_permission = "permission"
 calendar_permission = "permission"
 timezone = "NZST-12NZDT,M9.5.0,M4.1.0/3"
+morning_briefing_enabled = false
+morning_briefing_time = "08:00"
 oled_enabled = false
 oled_height = "64"
 ```
@@ -77,6 +81,14 @@ The first matching DM binds that username to its Instagram participant ID on the
 
 Instagram is slower. Zernio adds another service in both directions, and the ESP must poll its 60-request-per-minute free API. Replies can take several seconds longer. A Zernio delay or outage also stops Instagram delivery, so Telegram is the recommended primary interface.
 
+Telegram photos up to 2 MiB go into Luna's normal turn with their caption. The ESP keeps one raw image in PSRAM and base64 encodes it while sending the request. Instagram image attachments use Zernio's public HTTPS URLs. Several images can share one DM if their packed URLs fit the device's 1,024-byte reference area. Image bytes and URLs are discarded after the turn.
+
+Telegram voice notes up to 2 MiB are transcribed before Luna sees the message. OpenAI defaults to `gpt-4o-mini-transcribe`; OpenRouter defaults to `openai/gpt-4o-mini-transcribe`. Set `transcription_model` to replace that default. Voice notes are rejected with a clear reply when `llm_provider = "openai_compatible"` because a transcription endpoint cannot be derived from a custom Responses URL. Audio is discarded after transcription.
+
+Set `personality` to one printable line of up to 768 bytes. Luna receives it in chat, reminder and morning-briefing instructions. Context compaction does not receive it.
+
+The morning briefing runs once per local day at `morning_briefing_time`. It checks today's calendar, useful unread Gmail and upcoming reminders, skipping services set to `disabled`. A boot within four hours of the configured time catches up. A later boot records that day as skipped. Briefing state lives outside the eight reminder slots.
+
 Set `oled_enabled = true` for a 128×32 or 128×64 SSD1306 I2C OLED wired to SDA GPIO8 and SCL GPIO9. Set `oled_height` to match the panel. Click BOOT on the face to open jobs, then click to move through their pages. Hold BOOT on the jobs screen to return to the face. Hold it on the face to turn the OLED off, then hold it again to restart it.
 
 The agent has no fixed tool-call or page-count limit. Gmail and Calendar listings return numbered pages of up to 20 records with a continuation token. The agent can keep paging until the task is done. Device request capacity and external API limits still apply.
@@ -86,6 +98,8 @@ OpenAI, OpenRouter and custom Responses-compatible HTTPS endpoints use the same 
 Gmail supports numbered search and listing, message reads, send, scheduled send, read state, archive, inbox, star, spam, trash and restore. Calendar supports numbered listing and search, event details, create, partial update and delete. Permanent Gmail deletion is excluded. The narrower `gmail.modify` scope handles the implemented mailbox actions without granting immediate hard deletion.
 
 Persistent memory holds eight durable entries of up to 1,023 bytes each. Separate facts should use separate entries.
+
+The reminder store keeps eight jobs. Luna can replace a job's prompt and timing, snooze its next occurrence or queue a run-now copy without changing the original schedule. It reads `/jobs` state before any edit. Jobs at least 60 seconds late enter a separate eight-record missed inbox. Repeating misses are folded into one record with a count, and pending deliveries are never displaced by delivered history.
 
 Firmware builds are signed with the RSA-3072 key at `secrets/micropaw_signing_key.pem`. GitHub Actions reads the same key from `MICROPAW_SIGNING_KEY_B64`. Each versioned release includes the OTA image, sparse USB image, installers and SHA-256 checksums.
 
@@ -102,9 +116,13 @@ An existing refresh token created with only `gmail.send` must be replaced after 
 
 `/help` lists chat commands.
 
-`/metrics` reports request, inference, tool, context, delivery and HTTP timings without message content.
+`/metrics` reports request, inference, tool, context, delivery, media, transcription, missed-reminder and briefing counters without message content.
 
 `/memory` lists saved facts, and `/jobs` lists scheduled jobs.
+
+`/missed` lists pending and delivered missed reminders. `/missed clear` removes delivered history and keeps pending deliveries.
+
+`/briefing` shows the current briefing setting. `/briefing on`, `/briefing off` and `/briefing HH:MM` change it immediately for the owner.
 
 `/forget` clears conversation context while keeping saved facts and jobs.
 

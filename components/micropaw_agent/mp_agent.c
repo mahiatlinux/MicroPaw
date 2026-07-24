@@ -9,6 +9,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "mp_config.h"
+#include "mp_briefing.h"
 #include "mp_confirmation.h"
 #include "mp_context.h"
 #include "mp_display.h"
@@ -26,6 +27,7 @@ extern const char scheduled_txt[] asm("_binary_scheduled_txt_start");
 
 #define AGENT_QUEUE_LENGTH 4
 #define AGENT_INSTRUCTIONS_LEN (MP_MEMORY_SLOTS * (MP_MEMORY_TEXT_LEN + 3) + 4096)
+#define IMAGE_PLACEHOLDER "__MP_IMAGE_BYTES__"
 
 typedef struct {
     uint8_t step;
@@ -37,7 +39,8 @@ enum {
     READ_MEMORY = 1,
     READ_SCHEDULE = 2,
     READ_EMAIL = 4,
-    READ_CALENDAR = 8
+    READ_CALENDAR = 8,
+    READ_MISSED = 16
 };
 
 EXT_RAM_BSS_ATTR static char s_request[MP_AGENT_REQUEST_LEN];
@@ -58,6 +61,7 @@ static mp_send_fn s_send;
 static mp_flush_fn s_flush;
 static mp_finish_fn s_finish;
 static size_t s_trace_length;
+static size_t s_image_offset;
 static reset_confirmation_t s_reset;
 static volatile mp_agent_state_t s_state = MP_AGENT_IDLE;
 static const char *TAG = "agent";
@@ -71,6 +75,9 @@ static esp_err_t reset_state(void);
 static bool build_instructions(bool proactive);
 static bool append_input_message(mp_writer_t *writer, const char *role,
                                  const char *text, const char *id);
+static void scrub_media_references(const mp_message_t *message, char *text);
+static bool append_user_message(mp_writer_t *writer, const mp_message_t *message,
+                                bool persist);
 static bool build_request(const mp_message_t *message);
 static bool batch_needs_progress(const mp_llm_result_t *result);
 static const char *progress_fallback(const mp_llm_result_t *result);
@@ -87,11 +94,20 @@ static void send_progress(const char *chat_id, const char *text);
 static void execute_confirmation(const mp_message_t *message, uint32_t id);
 static void ota_progress(const char *text, void *context);
 static esp_err_t submit_message(uint32_t schedule_id, const char *chat_id, const char *text,
-                                bool proactive, TaskHandle_t waiter, TickType_t timeout);
+                                bool proactive, TaskHandle_t waiter, TickType_t timeout,
+                                mp_media_kind_t media_kind, const uint8_t *media_data,
+                                size_t media_size, const char *references,
+                                size_t references_size, uint8_t media_count);
 esp_err_t mp_agent_init(mp_send_fn send, mp_flush_fn flush, mp_finish_fn finish);
 esp_err_t mp_agent_start(void);
 esp_err_t mp_agent_submit(const char *chat_id, const char *text, bool proactive, TickType_t timeout);
 esp_err_t mp_agent_submit_wait(const char *chat_id, const char *text, bool proactive);
+esp_err_t mp_agent_submit_image_bytes_wait(const char *chat_id, const char *text,
+                                           const uint8_t *data, size_t size,
+                                           const char *mime_type);
+esp_err_t mp_agent_submit_image_urls_wait(const char *chat_id, const char *text,
+                                          const char *references, size_t references_size,
+                                          uint8_t count);
 esp_err_t mp_agent_submit_scheduled(uint32_t id, const char *chat_id, const char *text);
 void mp_agent_reset_confirmation(void);
 mp_agent_state_t mp_agent_state(void);
@@ -105,8 +121,10 @@ static void agent_task(void *argument)
         if (xQueueReceive(s_queue, &message, portMAX_DELAY) == pdTRUE) {
             mp_display_agent_begin();
             mp_metrics_request_begin(message.queued_us);
-            bool success = process_message(&message);
-            if (message.schedule_id) {
+            bool canceled = message.schedule_id &&
+                            !mp_scheduler_should_run(message.schedule_id);
+            bool success = canceled || process_message(&message);
+            if (message.schedule_id && !canceled) {
                 esp_err_t error = mp_scheduler_complete(message.schedule_id, success);
                 if (error != ESP_OK) {
                     mp_metrics_error("scheduler", error);
@@ -115,7 +133,7 @@ static void agent_task(void *argument)
             s_state = MP_AGENT_IDLE;
             mp_display_agent_end();
             if (message.waiter) {
-                xTaskNotify(message.waiter, 1U, eSetValueWithOverwrite);
+                xTaskNotify(message.waiter, success ? 1U : 2U, eSetValueWithOverwrite);
             }
         }
     }
@@ -162,7 +180,11 @@ static bool process_message(const mp_message_t *message)
     while (true) {
         s_state = MP_AGENT_INFERENCE;
         int64_t started = esp_timer_get_time();
-        esp_err_t error = mp_llm_stream(s_request, &s_result);
+        esp_err_t error = message->media_kind == MP_MEDIA_IMAGE_BYTES ?
+                          mp_llm_stream_image(s_request, s_image_offset,
+                                              (const uint8_t *)message->media_data,
+                                              message->media_size, &s_result) :
+                          mp_llm_stream(s_request, &s_result);
         mp_metrics_inference((uint32_t)((esp_timer_get_time() - started) / 1000));
         if (error != ESP_OK) {
             s_state = MP_AGENT_ERROR;
@@ -183,6 +205,8 @@ static bool process_message(const mp_message_t *message)
             }
             if (!message->proactive) {
                 size_t turn_size = 0;
+                scrub_media_references(message, s_result.text);
+                scrub_media_references(message, s_tool_trace);
                 if (persist_turn(message, &s_result, &turn_size)) {
                     compact_context(turn_size >= MP_CONTEXT_BYTE_TRIGGER);
                 } else {
@@ -253,7 +277,7 @@ static bool handle_command(const mp_message_t *message)
 {
     if (strcmp(message->text, "/help") == 0 || strcmp(message->text, "/start") == 0) {
         send_text(message->chat_id,
-                  "MicroPaw is ready. Commands: /metrics, /memory, /jobs, /forget, /reset, /reset cancel, /update, /confirm ID, /cancel ID.",
+                  "MicroPaw is ready. Commands: /metrics, /memory, /jobs, /missed, /missed clear, /briefing, /briefing on, /briefing off, /briefing HH:MM, /forget, /reset, /reset cancel, /update, /confirm ID, /cancel ID.",
                   true);
         return true;
     }
@@ -270,6 +294,55 @@ static bool handle_command(const mp_message_t *message)
     if (strcmp(message->text, "/jobs") == 0) {
         mp_scheduler_format(s_tool_output, sizeof(s_tool_output));
         send_text(message->chat_id, s_tool_output, true);
+        return true;
+    }
+    if (strcmp(message->text, "/missed") == 0) {
+        mp_scheduler_missed_format(s_tool_output, sizeof(s_tool_output));
+        send_text(message->chat_id, s_tool_output, true);
+        return true;
+    }
+    if (strcmp(message->text, "/missed clear") == 0) {
+        esp_err_t error = mp_scheduler_missed_clear();
+        send_text(message->chat_id,
+                  error == ESP_OK ? "Delivered missed-reminder history cleared. Pending deliveries remain." :
+                  esp_err_to_name(error), true);
+        return true;
+    }
+    if (strcmp(message->text, "/briefing") == 0) {
+        if (!owner_message(message)) {
+            send_text(message->chat_id, "Owner only.", true);
+        } else {
+            mp_briefing_format(s_tool_output, sizeof(s_tool_output));
+            send_text(message->chat_id, s_tool_output, true);
+        }
+        return true;
+    }
+    if (strcmp(message->text, "/briefing on") == 0 ||
+        strcmp(message->text, "/briefing off") == 0) {
+        if (!owner_message(message)) {
+            send_text(message->chat_id, "Owner only.", true);
+        } else {
+            bool enabled = strcmp(message->text, "/briefing on") == 0;
+            esp_err_t error = mp_briefing_set_enabled(enabled);
+            send_text(message->chat_id,
+                      error == ESP_OK ? (enabled ? "Morning briefing enabled." :
+                                         "Morning briefing disabled.") :
+                      esp_err_to_name(error), true);
+        }
+        return true;
+    }
+    if (strncmp(message->text, "/briefing ", 10) == 0) {
+        if (!owner_message(message)) {
+            send_text(message->chat_id, "Owner only.", true);
+        } else {
+            esp_err_t error = mp_briefing_set_time(message->text + 10);
+            if (error == ESP_OK) {
+                mp_briefing_format(s_tool_output, sizeof(s_tool_output));
+                send_text(message->chat_id, s_tool_output, true);
+            } else {
+                send_text(message->chat_id, "Use /briefing HH:MM with a 24-hour local time.", true);
+            }
+        }
         return true;
     }
     if (strcmp(message->text, "/forget") == 0) {
@@ -297,7 +370,7 @@ static bool handle_command(const mp_message_t *message)
         s_reset.expires_us = esp_timer_get_time() + 300000000LL;
         strlcpy(s_reset.chat_id, message->chat_id, sizeof(s_reset.chat_id));
         send_text(message->chat_id,
-                  "Reset removes saved facts, conversation context, jobs and pending permissions. Credentials, permission modes, timezone and model settings stay. Send /reset confirm within five minutes.",
+                  "Reset removes saved facts, conversation context, jobs, missed-reminder history and pending permissions. Credentials, permission modes, timezone and model settings stay. Send /reset confirm within five minutes.",
                   true);
         return true;
     }
@@ -410,6 +483,10 @@ static bool build_instructions(bool proactive)
         mp_writer_raw(&writer, "\nSaved memory:\n");
         mp_writer_raw(&writer, s_memory_context);
     }
+    if (mp_config_get()->personality[0]) {
+        mp_writer_raw(&writer, "\nOwner-set personality:\n");
+        mp_writer_raw(&writer, mp_config_get()->personality);
+    }
     return writer.valid;
 }
 
@@ -435,6 +512,81 @@ static bool append_input_message(mp_writer_t *writer, const char *role,
     return writer->valid;
 }
 
+static void scrub_media_references(const mp_message_t *message, char *text)
+{
+    if (message->media_kind != MP_MEDIA_IMAGE_URLS || !text) {
+        return;
+    }
+    static const char marker[] = "[image]";
+    size_t offset = 0;
+    for (uint8_t index = 0; index < message->media_count &&
+                            offset < message->media_refs_size; index++) {
+        const char *reference = message->media_refs + offset;
+        size_t length = strnlen(reference, message->media_refs_size - offset);
+        if (!length || offset + length >= message->media_refs_size) {
+            return;
+        }
+        char *found;
+        while ((found = strstr(text, reference))) {
+            size_t tail = strlen(found + length);
+            memcpy(found, marker, sizeof(marker) - 1);
+            memmove(found + sizeof(marker) - 1, found + length, tail + 1);
+        }
+        offset += length + 1;
+    }
+}
+
+static bool append_user_message(mp_writer_t *writer, const mp_message_t *message,
+                                bool persist)
+{
+    char filtered[MP_MESSAGE_LEN];
+    const char *text = message->text;
+    if (persist && message->media_kind == MP_MEDIA_IMAGE_URLS) {
+        strlcpy(filtered, message->text, sizeof(filtered));
+        scrub_media_references(message, filtered);
+        text = filtered;
+    }
+    mp_writer_raw(writer, "{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":");
+    mp_writer_string(writer, text[0] ? text :
+                     persist ? "" : "Please respond to this image.");
+    if (message->media_kind == MP_MEDIA_NONE) {
+        mp_writer_raw(writer, "}]}");
+        return writer->valid;
+    }
+    if (persist) {
+        mp_writer_raw(writer, "},{\"type\":\"input_text\",\"text\":\"[Image attached]\"}]}");
+        return writer->valid;
+    }
+    if (message->media_kind == MP_MEDIA_IMAGE_BYTES) {
+        const char *mime = message->media_refs;
+        mp_writer_raw(writer, "},{\"type\":\"input_image\",\"image_url\":\"data:");
+        mp_writer_raw(writer, mime);
+        mp_writer_raw(writer, ";base64,");
+        s_image_offset = writer->length;
+        mp_writer_raw(writer, IMAGE_PLACEHOLDER);
+        mp_writer_raw(writer, "\"}]}");
+        return writer->valid;
+    }
+    size_t offset = 0;
+    for (uint8_t index = 0; index < message->media_count; index++) {
+        if (offset >= message->media_refs_size) {
+            writer->valid = false;
+            break;
+        }
+        const char *url = message->media_refs + offset;
+        size_t length = strnlen(url, message->media_refs_size - offset);
+        if (!length || offset + length >= message->media_refs_size) {
+            writer->valid = false;
+            break;
+        }
+        mp_writer_raw(writer, "},{\"type\":\"input_image\",\"image_url\":");
+        mp_writer_string(writer, url);
+        offset += length + 1;
+    }
+    mp_writer_raw(writer, "]}");
+    return writer->valid;
+}
+
 static bool build_request(const mp_message_t *message)
 {
     const mp_config_t *config = mp_config_get();
@@ -456,6 +608,7 @@ static bool build_request(const mp_message_t *message)
     mp_writer_raw(&writer, ",\"instructions\":");
     mp_writer_string(&writer, s_instructions);
     mp_writer_raw(&writer, ",\"input\":[");
+    s_image_offset = 0;
     bool comma = false;
     if (!message->proactive) {
         comma = mp_context_format(&writer);
@@ -466,7 +619,7 @@ static bool build_request(const mp_message_t *message)
     if (comma) {
         mp_writer_char(&writer, ',');
     }
-    append_input_message(&writer, "user", message->text, NULL);
+    append_user_message(&writer, message, false);
     if (s_trace_length) {
         mp_writer_char(&writer, ',');
         mp_writer_raw(&writer, s_tool_trace);
@@ -557,6 +710,9 @@ static uint8_t tool_read_bit(const char *name)
     if (strcmp(name, "schedule_list") == 0) {
         return READ_SCHEDULE;
     }
+    if (strcmp(name, "schedule_missed_list") == 0) {
+        return READ_MISSED;
+    }
     if (strcmp(name, "email_search") == 0 || strcmp(name, "email_get") == 0) {
         return READ_EMAIL;
     }
@@ -572,9 +728,15 @@ static uint8_t tool_write_bit(const char *name)
         return READ_MEMORY;
     }
     if (strcmp(name, "schedule_add") == 0 ||
+        strcmp(name, "schedule_update") == 0 ||
+        strcmp(name, "schedule_snooze") == 0 ||
+        strcmp(name, "schedule_run") == 0 ||
         strcmp(name, "schedule_delete") == 0 ||
         strcmp(name, "email_schedule") == 0) {
         return READ_SCHEDULE;
+    }
+    if (strcmp(name, "schedule_missed_clear") == 0) {
+        return READ_MISSED;
     }
     if (strcmp(name, "email_modify") == 0 ||
         strcmp(name, "email_trash") == 0 ||
@@ -638,7 +800,7 @@ static bool persist_turn(const mp_message_t *message, const mp_llm_result_t *fin
 {
     mp_writer_t writer;
     mp_writer_init(&writer, s_request, sizeof(s_request));
-    append_input_message(&writer, "user", message->text, NULL);
+    append_user_message(&writer, message, true);
     if (s_trace_length) {
         mp_writer_char(&writer, ',');
         mp_writer_raw(&writer, s_tool_trace);
@@ -800,7 +962,8 @@ esp_err_t mp_agent_start(void)
 
 esp_err_t mp_agent_submit(const char *chat_id, const char *text, bool proactive, TickType_t timeout)
 {
-    return submit_message(0, chat_id, text, proactive, NULL, timeout);
+    return submit_message(0, chat_id, text, proactive, NULL, timeout,
+                          MP_MEDIA_NONE, NULL, 0, NULL, 0, 0);
 }
 
 esp_err_t mp_agent_submit_wait(const char *chat_id, const char *text, bool proactive)
@@ -808,36 +971,88 @@ esp_err_t mp_agent_submit_wait(const char *chat_id, const char *text, bool proac
     uint32_t ignored;
     xTaskNotifyWait(0, UINT32_MAX, &ignored, 0);
     esp_err_t error = submit_message(0, chat_id, text, proactive,
-                                     xTaskGetCurrentTaskHandle(), portMAX_DELAY);
+                                     xTaskGetCurrentTaskHandle(), portMAX_DELAY,
+                                     MP_MEDIA_NONE, NULL, 0, NULL, 0, 0);
     if (error != ESP_OK) {
         return error;
     }
     uint32_t result;
-    return xTaskNotifyWait(0, UINT32_MAX, &result, portMAX_DELAY) == pdTRUE ?
+    return xTaskNotifyWait(0, UINT32_MAX, &result, portMAX_DELAY) == pdTRUE && result == 1U ?
+           ESP_OK : ESP_FAIL;
+}
+
+esp_err_t mp_agent_submit_image_bytes_wait(const char *chat_id, const char *text,
+                                           const uint8_t *data, size_t size,
+                                           const char *mime_type)
+{
+    uint32_t ignored;
+    xTaskNotifyWait(0, UINT32_MAX, &ignored, 0);
+    esp_err_t error = submit_message(0, chat_id, text, false,
+                                     xTaskGetCurrentTaskHandle(), portMAX_DELAY,
+                                     MP_MEDIA_IMAGE_BYTES, data, size, mime_type,
+                                     strlen(mime_type) + 1, 1);
+    if (error != ESP_OK) {
+        return error;
+    }
+    uint32_t result;
+    return xTaskNotifyWait(0, UINT32_MAX, &result, portMAX_DELAY) == pdTRUE && result == 1U ?
+           ESP_OK : ESP_FAIL;
+}
+
+esp_err_t mp_agent_submit_image_urls_wait(const char *chat_id, const char *text,
+                                          const char *references, size_t references_size,
+                                          uint8_t count)
+{
+    uint32_t ignored;
+    xTaskNotifyWait(0, UINT32_MAX, &ignored, 0);
+    esp_err_t error = submit_message(0, chat_id, text, false,
+                                     xTaskGetCurrentTaskHandle(), portMAX_DELAY,
+                                     MP_MEDIA_IMAGE_URLS, NULL, 0, references,
+                                     references_size, count);
+    if (error != ESP_OK) {
+        return error;
+    }
+    uint32_t result;
+    return xTaskNotifyWait(0, UINT32_MAX, &result, portMAX_DELAY) == pdTRUE && result == 1U ?
            ESP_OK : ESP_FAIL;
 }
 
 esp_err_t mp_agent_submit_scheduled(uint32_t id, const char *chat_id, const char *text)
 {
-    return id ? submit_message(id, chat_id, text, true, NULL, pdMS_TO_TICKS(100)) :
+    return id ? submit_message(id, chat_id, text, true, NULL, pdMS_TO_TICKS(100),
+                               MP_MEDIA_NONE, NULL, 0, NULL, 0, 0) :
            ESP_ERR_INVALID_ARG;
 }
 
 static esp_err_t submit_message(uint32_t schedule_id, const char *chat_id, const char *text,
-                                bool proactive, TaskHandle_t waiter, TickType_t timeout)
+                                bool proactive, TaskHandle_t waiter, TickType_t timeout,
+                                mp_media_kind_t media_kind, const uint8_t *media_data,
+                                size_t media_size, const char *references,
+                                size_t references_size, uint8_t media_count)
 {
     if (!s_queue || !chat_id || !text || strlen(chat_id) >= MP_CHAT_ID_LEN ||
-        strlen(text) >= MP_MESSAGE_LEN) {
+        strlen(text) >= MP_MESSAGE_LEN || references_size > MP_MEDIA_REF_ARENA_LEN ||
+        (references_size && !references) ||
+        (media_kind == MP_MEDIA_IMAGE_BYTES && (!media_data || !media_size || !references_size)) ||
+        (media_kind == MP_MEDIA_IMAGE_URLS && (!references_size || !media_count))) {
         return ESP_ERR_INVALID_ARG;
     }
     mp_message_t message = {
         .queued_us = esp_timer_get_time(),
         .schedule_id = schedule_id,
+        .media_data = (uintptr_t)media_data,
+        .media_size = media_size,
+        .media_refs_size = references_size,
+        .media_count = media_count,
+        .media_kind = media_kind,
         .proactive = proactive,
         .waiter = waiter
     };
     strlcpy(message.chat_id, chat_id, sizeof(message.chat_id));
     strlcpy(message.text, text, sizeof(message.text));
+    if (references_size) {
+        memcpy(message.media_refs, references, references_size);
+    }
     return xQueueSend(s_queue, &message, timeout) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 

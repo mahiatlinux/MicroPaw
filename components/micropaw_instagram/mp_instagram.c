@@ -45,6 +45,7 @@ typedef struct {
     char poll_response[CONFIG_MICROPAW_WORK_TEXT_BYTES];
     char sender_body[2048];
     char message[MP_MESSAGE_LEN];
+    char media_refs[MP_MEDIA_REF_ARENA_LEN];
     outbound_item_t enqueue;
     outbound_item_t current;
     uint8_t outbound_storage[OUTBOUND_QUEUE_LENGTH * sizeof(outbound_item_t)];
@@ -94,6 +95,8 @@ static esp_err_t find_checkpoint_page(size_t *page, size_t *checkpoint);
 static esp_err_t process_page(size_t limit);
 static esp_err_t collect_messages(message_ref_t *messages, size_t size, size_t *count);
 static esp_err_t process_message(const char *json, size_t length);
+static esp_err_t collect_image_refs(const char *json, size_t length, uint8_t *count,
+                                    size_t *used);
 static size_t utf8_chunk(const char *text, size_t length, size_t limit);
 static esp_err_t send_chunk(const char *chat_id, const char *text, size_t length);
 static esp_err_t deliver_text(const char *chat_id, const char *text, size_t length);
@@ -556,20 +559,75 @@ static esp_err_t process_message(const char *json, size_t length)
     char chat_id[MP_CHAT_ID_LEN];
     snprintf(chat_id, sizeof(chat_id), CHAT_PREFIX "%.*s",
              (int)(sizeof(chat_id) - sizeof(CHAT_PREFIX)), s_memory->conversation_id);
-    if (!mp_json_get_string(json, length, "message", s_memory->message, sizeof(s_memory->message)) ||
-        !s_memory->message[0]) {
+    s_memory->message[0] = 0;
+    mp_json_get_string(json, length, "message", s_memory->message, sizeof(s_memory->message));
+    uint8_t image_count;
+    size_t refs_used;
+    esp_err_t media_error = collect_image_refs(json, length, &image_count, &refs_used);
+    if (media_error != ESP_OK) {
         esp_err_t error = mp_instagram_send(
-            chat_id, "MicroPaw currently accepts text DMs up to 1,023 bytes.");
+            chat_id, "This Instagram media message has unsupported, invalid or too many image attachments.");
         if (error == ESP_OK) {
             error = mp_instagram_flush(portMAX_DELAY);
         }
         return error == ESP_OK ? checkpoint_save(message_id) : error;
     }
-    esp_err_t error = mp_agent_submit_wait(chat_id, s_memory->message, false);
+    if (!s_memory->message[0] && !image_count) {
+        esp_err_t error = mp_instagram_send(
+            chat_id, "MicroPaw accepts text and public HTTPS image attachments.");
+        if (error == ESP_OK) {
+            error = mp_instagram_flush(portMAX_DELAY);
+        }
+        return error == ESP_OK ? checkpoint_save(message_id) : error;
+    }
+    esp_err_t error = image_count ?
+                      mp_agent_submit_image_urls_wait(chat_id, s_memory->message,
+                                                      s_memory->media_refs, refs_used,
+                                                      image_count) :
+                      mp_agent_submit_wait(chat_id, s_memory->message, false);
     if (error == ESP_OK) {
         error = mp_instagram_flush(portMAX_DELAY);
     }
     return error == ESP_OK ? checkpoint_save(message_id) : error;
+}
+
+static esp_err_t collect_image_refs(const char *json, size_t length, uint8_t *count,
+                                    size_t *used)
+{
+    const char *attachments;
+    size_t attachments_length;
+    *count = 0;
+    *used = 0;
+    if (!mp_json_get_slice(json, length, "attachments",
+                           &attachments, &attachments_length)) {
+        return ESP_OK;
+    }
+    size_t offset = 0;
+    const char *attachment;
+    size_t attachment_length;
+    while (mp_json_next(attachments, attachments_length, &offset,
+                        &attachment, &attachment_length)) {
+        char type[16];
+        if (*count == UINT8_MAX ||
+            !mp_json_get_string(attachment, attachment_length, "type",
+                                type, sizeof(type)) ||
+            strcmp(type, "image") != 0 ||
+            *used >= sizeof(s_memory->media_refs) ||
+            !mp_json_get_string(attachment, attachment_length, "url",
+                                s_memory->media_refs + *used,
+                                sizeof(s_memory->media_refs) - *used) ||
+            !mp_url_is_public_https(s_memory->media_refs + *used) ||
+            strpbrk(s_memory->media_refs + *used, " \t\r\n\"\\") != NULL) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        size_t url_length = strlen(s_memory->media_refs + *used);
+        if (!url_length || url_length + 1 > sizeof(s_memory->media_refs) - *used) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        *used += url_length + 1;
+        (*count)++;
+    }
+    return ESP_OK;
 }
 
 static size_t utf8_chunk(const char *text, size_t length, size_t limit)

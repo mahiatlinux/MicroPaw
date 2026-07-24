@@ -65,7 +65,12 @@ static esp_err_t memory_save(const char *arguments, const mp_tool_context_t *con
 static esp_err_t memory_list(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t schedule_add(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t schedule_list(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t schedule_update(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t schedule_snooze(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t schedule_run(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t schedule_delete(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t schedule_missed_list(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t schedule_missed_clear(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t time_now(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t diagnostics(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t web_search(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
@@ -101,7 +106,12 @@ static const tool_t s_tools[] = {
     {"memory_list", "{\"type\":\"function\",\"name\":\"memory_list\",\"description\":\"Read durable facts.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", memory_list},
     {"schedule_add", "{\"type\":\"function\",\"name\":\"schedule_add\",\"description\":\"Schedule a future assistant turn. Call schedule_list first in the same turn. Call time_now before converting an absolute local time to delay_seconds. repeat_seconds is zero for a one-time job.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"prompt\",\"delay_seconds\",\"repeat_seconds\"],\"additionalProperties\":false}}", schedule_add},
     {"schedule_list", "{\"type\":\"function\",\"name\":\"schedule_list\",\"description\":\"List scheduled jobs.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", schedule_list},
+    {"schedule_update", "{\"type\":\"function\",\"name\":\"schedule_update\",\"description\":\"Replace a scheduled job prompt and timing while preserving its ID and delivery channel. Call schedule_list first in the same turn. A running job cannot be updated.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"},\"prompt\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"id\",\"prompt\",\"delay_seconds\",\"repeat_seconds\"],\"additionalProperties\":false}}", schedule_update},
+    {"schedule_snooze", "{\"type\":\"function\",\"name\":\"schedule_snooze\",\"description\":\"Move a scheduled job's next occurrence to delay_seconds from now. Call schedule_list first in the same turn. A running job cannot be snoozed.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"},\"delay_seconds\":{\"type\":\"integer\"}},\"required\":[\"id\",\"delay_seconds\"],\"additionalProperties\":false}}", schedule_snooze},
+    {"schedule_run", "{\"type\":\"function\",\"name\":\"schedule_run\",\"description\":\"Queue an immediate separate copy of a scheduled job without changing the original schedule. Call schedule_list first in the same turn.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", schedule_run},
     {"schedule_delete", "{\"type\":\"function\",\"name\":\"schedule_delete\",\"description\":\"Delete a scheduled job by ID after calling schedule_list in the same turn.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", schedule_delete},
+    {"schedule_missed_list", "{\"type\":\"function\",\"name\":\"schedule_missed_list\",\"description\":\"List pending and delivered missed reminders.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", schedule_missed_list},
+    {"schedule_missed_clear", "{\"type\":\"function\",\"name\":\"schedule_missed_clear\",\"description\":\"Clear delivered missed-reminder history after calling schedule_missed_list in the same turn. Pending deliveries remain.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", schedule_missed_clear},
     {"time_now", "{\"type\":\"function\",\"name\":\"time_now\",\"description\":\"Read the device local date and time.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", time_now},
     {"diagnostics", "{\"type\":\"function\",\"name\":\"diagnostics\",\"description\":\"Read heap and task stack measurements.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", diagnostics},
 #if CONFIG_MICROPAW_WEB_SEARCH
@@ -247,6 +257,61 @@ static esp_err_t schedule_list(const char *arguments, const mp_tool_context_t *c
     return ESP_OK;
 }
 
+static esp_err_t schedule_update(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    uint32_t id;
+    uint32_t delay;
+    uint32_t repeat;
+    int64_t epoch;
+    if (!json_uint(arguments, "id", &id) ||
+        !json_string(arguments, "prompt", s_arg1, sizeof(s_arg1)) ||
+        !json_uint(arguments, "delay_seconds", &delay) ||
+        !json_uint(arguments, "repeat_seconds", &repeat) || !delay) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t error = mp_scheduler_update(id, s_arg1, delay, repeat, &epoch);
+    if (error == ESP_OK) {
+        schedule_result(output, size, "Job", id, epoch);
+    } else if (error == ESP_ERR_INVALID_STATE) {
+        strlcpy(output, "The scheduled job is running and cannot be updated.", size);
+    }
+    return error;
+}
+
+static esp_err_t schedule_snooze(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    uint32_t id;
+    uint32_t delay;
+    int64_t epoch;
+    if (!json_uint(arguments, "id", &id) ||
+        !json_uint(arguments, "delay_seconds", &delay) || !delay) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t error = mp_scheduler_snooze(id, delay, &epoch);
+    if (error == ESP_OK) {
+        schedule_result(output, size, "Job", id, epoch);
+    } else if (error == ESP_ERR_INVALID_STATE) {
+        strlcpy(output, "The scheduled job is running and cannot be snoozed.", size);
+    }
+    return error;
+}
+
+static esp_err_t schedule_run(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)context;
+    uint32_t id;
+    if (!json_uint(arguments, "id", &id)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t error = mp_scheduler_run(id);
+    if (error == ESP_OK) {
+        strlcpy(output, "A separate immediate copy was queued. The schedule is unchanged.", size);
+    }
+    return error;
+}
+
 static esp_err_t schedule_delete(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
 {
     (void)context;
@@ -257,6 +322,25 @@ static esp_err_t schedule_delete(const char *arguments, const mp_tool_context_t 
     esp_err_t error = mp_scheduler_delete(id);
     if (error == ESP_OK) {
         strlcpy(output, "Scheduled job deleted.", size);
+    }
+    return error;
+}
+
+static esp_err_t schedule_missed_list(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)arguments;
+    (void)context;
+    mp_scheduler_missed_format(output, size);
+    return ESP_OK;
+}
+
+static esp_err_t schedule_missed_clear(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
+{
+    (void)arguments;
+    (void)context;
+    esp_err_t error = mp_scheduler_missed_clear();
+    if (error == ESP_OK) {
+        strlcpy(output, "Delivered missed-reminder history cleared. Pending deliveries remain.", size);
     }
     return error;
 }

@@ -88,6 +88,11 @@ config MICROPAW_SCHEDULER_STACK
     range 3072 8192
     default 4096
 
+config MICROPAW_BRIEFING_STACK
+    int "Morning briefing task stack bytes"
+    range 3072 8192
+    default 4096
+
 config MICROPAW_CLI_STACK
     int "Serial console task stack bytes"
     range 3072 8192

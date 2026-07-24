@@ -32,6 +32,8 @@ static const config_field_t s_fields[] = {
     {"llm_model", "model", offsetof(mp_config_t, llm_model), sizeof(s_config.llm_model), false},
     {"llm_endpoint", "llm_endpoint", offsetof(mp_config_t, llm_endpoint), sizeof(s_config.llm_endpoint), false},
     {"llm_max_output_tokens", "llm_tokens", offsetof(mp_config_t, llm_max_output_tokens), sizeof(s_config.llm_max_output_tokens), false},
+    {"transcription_model", "stt_model", offsetof(mp_config_t, transcription_model), sizeof(s_config.transcription_model), false},
+    {"personality", "personality", offsetof(mp_config_t, personality), sizeof(s_config.personality), false},
     {"google_client_id", "google_id", offsetof(mp_config_t, google_client_id), sizeof(s_config.google_client_id), true},
     {"google_client_secret", "google_sec", offsetof(mp_config_t, google_client_secret), sizeof(s_config.google_client_secret), true},
     {"google_refresh_token", "google_ref", offsetof(mp_config_t, google_refresh_token), sizeof(s_config.google_refresh_token), true},
@@ -41,6 +43,8 @@ static const config_field_t s_fields[] = {
     {"email_permission", "email_perm", offsetof(mp_config_t, email_permission), sizeof(s_config.email_permission), false},
     {"calendar_permission", "calendar_perm", offsetof(mp_config_t, calendar_permission), sizeof(s_config.calendar_permission), false},
     {"timezone", "timezone", offsetof(mp_config_t, timezone), sizeof(s_config.timezone), false},
+    {"morning_briefing_enabled", "briefing_on", offsetof(mp_config_t, morning_briefing_enabled), sizeof(s_config.morning_briefing_enabled), false},
+    {"morning_briefing_time", "briefing_at", offsetof(mp_config_t, morning_briefing_time), sizeof(s_config.morning_briefing_time), false},
     {"oled_enabled", "oled", offsetof(mp_config_t, oled_enabled), sizeof(s_config.oled_enabled), false},
     {"oled_height", "oled_h", offsetof(mp_config_t, oled_height), sizeof(s_config.oled_height), false}
 };
@@ -51,6 +55,7 @@ static char *field_value(mp_config_t *config, const config_field_t *field);
 static const char *const_field_value(const mp_config_t *config, const config_field_t *field);
 static int field_index(const char *name, size_t length);
 static bool valid_value(config_field_t field, const char *value);
+static bool valid_time(const char *value);
 static bool parse_toml_string(const char **cursor, const char *end, char *output, size_t size);
 static esp_err_t parse_toml(const char *text, size_t length, uint32_t *present, size_t *error_line);
 static esp_err_t load_value(nvs_handle_t handle, const config_field_t *field);
@@ -73,6 +78,10 @@ static void config_defaults(void)
     strlcpy(s_config.calendar_permission, "permission", sizeof(s_config.calendar_permission));
     strlcpy(s_config.instagram_enabled, "false", sizeof(s_config.instagram_enabled));
     strlcpy(s_config.timezone, "UTC0", sizeof(s_config.timezone));
+    strlcpy(s_config.morning_briefing_enabled, "false",
+            sizeof(s_config.morning_briefing_enabled));
+    strlcpy(s_config.morning_briefing_time, "08:00",
+            sizeof(s_config.morning_briefing_time));
     strlcpy(s_config.oled_enabled, "false", sizeof(s_config.oled_enabled));
     strlcpy(s_config.oled_height, "64", sizeof(s_config.oled_height));
 }
@@ -102,6 +111,15 @@ static int field_index(const char *name, size_t length)
     return -1;
 }
 
+static bool valid_time(const char *value)
+{
+    return strlen(value) == 5 && value[2] == ':' &&
+           isdigit((unsigned char)value[0]) && isdigit((unsigned char)value[1]) &&
+           isdigit((unsigned char)value[3]) && isdigit((unsigned char)value[4]) &&
+           (value[0] - '0') * 10 + value[1] - '0' < 24 &&
+           (value[3] - '0') * 10 + value[4] - '0' < 60;
+}
+
 static bool valid_value(config_field_t field, const char *value)
 {
     for (const unsigned char *cursor = (const unsigned char *)value; *cursor; cursor++) {
@@ -128,8 +146,12 @@ static bool valid_value(config_field_t field, const char *value)
                strcmp(value, "disabled") == 0;
     }
     if (strcmp(field.name, "oled_enabled") == 0 ||
-        strcmp(field.name, "instagram_enabled") == 0) {
+        strcmp(field.name, "instagram_enabled") == 0 ||
+        strcmp(field.name, "morning_briefing_enabled") == 0) {
         return strcmp(value, "true") == 0 || strcmp(value, "false") == 0;
+    }
+    if (strcmp(field.name, "morning_briefing_time") == 0) {
+        return valid_time(value);
     }
     if (strcmp(field.name, "oled_height") == 0) {
         return strcmp(value, "32") == 0 || strcmp(value, "64") == 0;
@@ -207,7 +229,8 @@ static esp_err_t parse_toml(const char *text, size_t length, uint32_t *present, 
             char *destination = field_value(&s_import, &s_fields[index]);
             bool parsed;
             if ((strcmp(s_fields[index].name, "oled_enabled") == 0 ||
-                 strcmp(s_fields[index].name, "instagram_enabled") == 0) &&
+                 strcmp(s_fields[index].name, "instagram_enabled") == 0 ||
+                 strcmp(s_fields[index].name, "morning_briefing_enabled") == 0) &&
                 value < line_end && *value != '"' && *value != '\'') {
                 if (line_end - value >= 4 && strncmp(value, "true", 4) == 0) {
                     strlcpy(destination, "true", s_fields[index].size);

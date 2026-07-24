@@ -15,6 +15,10 @@ void mp_metrics_progress(void);
 void mp_metrics_inference(uint32_t elapsed_ms);
 void mp_metrics_tool(const char *name, uint32_t elapsed_ms);
 void mp_metrics_delivery(uint32_t elapsed_ms);
+void mp_metrics_media_download(uint32_t elapsed_ms, size_t bytes);
+void mp_metrics_transcription(uint32_t elapsed_ms);
+void mp_metrics_missed(uint32_t count, uint32_t late_ms);
+void mp_metrics_briefing(uint32_t elapsed_ms, bool delivered);
 void mp_metrics_http(int status, size_t bytes, uint32_t connect_ms, uint32_t first_byte_ms,
                      uint32_t total_ms, bool reused);
 void mp_metrics_error(const char *source, esp_err_t error);
