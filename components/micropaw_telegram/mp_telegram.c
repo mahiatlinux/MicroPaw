@@ -151,8 +151,8 @@ static void sender_task(void *argument)
                 if (strcmp(typing_chat, s_current.chat_id) == 0) {
                     typing = false;
                     typing_chat[0] = 0;
-                    mp_display_response_end();
                 }
+                mp_display_response_end();
             } else {
                 esp_err_t error = deliver_text(s_current.chat_id, s_current.text,
                                                s_current.text_length);

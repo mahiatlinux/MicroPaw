@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "mp_agent_policy.h"
 #include "mp_config.h"
 #include "mp_briefing.h"
 #include "mp_confirmation.h"
@@ -34,14 +35,6 @@ typedef struct {
     int64_t expires_us;
     char chat_id[MP_CHAT_ID_LEN];
 } reset_confirmation_t;
-
-enum {
-    READ_MEMORY = 1,
-    READ_SCHEDULE = 2,
-    READ_EMAIL = 4,
-    READ_CALENDAR = 8,
-    READ_MISSED = 16
-};
 
 EXT_RAM_BSS_ATTR static char s_request[MP_AGENT_REQUEST_LEN];
 EXT_RAM_BSS_ATTR static char s_instructions[AGENT_INSTRUCTIONS_LEN];
@@ -79,10 +72,8 @@ static void scrub_media_references(const mp_message_t *message, char *text);
 static bool append_user_message(mp_writer_t *writer, const mp_message_t *message,
                                 bool persist);
 static bool build_request(const mp_message_t *message);
-static bool batch_needs_progress(const mp_llm_result_t *result);
+static uint8_t batch_slow_stage(const mp_llm_result_t *result);
 static const char *progress_fallback(const mp_llm_result_t *result);
-static uint8_t tool_read_bit(const char *name);
-static uint8_t tool_write_bit(const char *name);
 static bool append_progress(const mp_llm_result_t *result);
 static bool append_tool_exchange(const mp_llm_call_t *call, const char *output);
 static bool persist_turn(const mp_message_t *message, const mp_llm_result_t *final_result,
@@ -176,6 +167,8 @@ static bool process_message(const mp_message_t *message)
         return false;
     }
     bool progress_sent = false;
+    bool fallback_sent = false;
+    uint8_t reported_slow_stages = 0;
     uint8_t current_reads = 0;
     while (true) {
         s_state = MP_AGENT_INFERENCE;
@@ -215,42 +208,51 @@ static bool process_message(const mp_message_t *message)
             }
             return delivery == ESP_OK;
         }
-        bool needs_progress = batch_needs_progress(&s_result);
-        if (!needs_progress) {
-            s_result.text[0] = 0;
-            s_result.text_length = 0;
-        } else if (!s_result.text[0] && !progress_sent) {
-            strlcpy(s_result.text, progress_fallback(&s_result), sizeof(s_result.text));
-            s_result.text_length = strlen(s_result.text);
+        uint8_t slow_stage = batch_slow_stage(&s_result);
+        bool send_update = s_result.text[0] &&
+                           (!progress_sent || (slow_stage & ~reported_slow_stages));
+        if (!s_result.text[0] && !progress_sent && !fallback_sent) {
+            const char *fallback = progress_fallback(&s_result);
+            if (fallback) {
+                snprintf(s_result.text, sizeof(s_result.text), "[happy] %s", fallback);
+                mp_display_filter_text(s_result.text);
+                s_result.text_length = strlen(s_result.text);
+                fallback_sent = true;
+                send_update = true;
+            }
         }
         if (s_result.text[0]) {
-            send_progress(message->chat_id, s_result.text);
+            if (send_update) {
+                send_progress(message->chat_id, s_result.text);
+                progress_sent = true;
+                reported_slow_stages |= slow_stage;
+            }
             if (!append_progress(&s_result)) {
                 s_state = MP_AGENT_ERROR;
                 send_text(message->chat_id, "The progress trace exceeded the device buffer.", true);
                 return false;
             }
-            progress_sent = true;
         }
         s_state = MP_AGENT_TOOL;
         mp_tool_context_t context = {0};
         strlcpy(context.chat_id, message->chat_id, sizeof(context.chat_id));
+        uint8_t reads_before_batch = current_reads;
         size_t offset = 0;
         const mp_llm_call_t *call;
         while ((call = mp_llm_call_next(&s_result, &offset))) {
             s_tool_output[0] = 0;
             started = esp_timer_get_time();
-            uint8_t write_bit = tool_write_bit(call->name);
-            if (write_bit && !(current_reads & write_bit)) {
+            uint8_t required = mp_agent_policy_required(call->name);
+            uint8_t missing = required & ~reads_before_batch;
+            if (missing) {
                 error = ESP_ERR_INVALID_STATE;
-                strlcpy(s_tool_output,
-                        "Read the current matching state in this turn before changing it.",
-                        sizeof(s_tool_output));
+                mp_agent_policy_error(call->name, missing,
+                                      s_tool_output, sizeof(s_tool_output));
             } else {
                 error = mp_tools_execute(call->name, call->arguments, &context, false,
                                          s_tool_output, sizeof(s_tool_output));
                 if (error == ESP_OK) {
-                    current_reads |= tool_read_bit(call->name);
+                    current_reads |= mp_agent_policy_read(call->name);
                 }
             }
             mp_metrics_tool(call->name,
@@ -632,123 +634,28 @@ static bool build_request(const mp_message_t *message)
     return writer.valid;
 }
 
-static bool batch_needs_progress(const mp_llm_result_t *result)
+static uint8_t batch_slow_stage(const mp_llm_result_t *result)
 {
     size_t offset = 0;
+    uint8_t stage = 0;
     const mp_llm_call_t *call;
     while ((call = mp_llm_call_next(result, &offset))) {
-        if (strcmp(call->name, "time_now") != 0 &&
-            strcmp(call->name, "diagnostics") != 0 &&
-            strcmp(call->name, "email_schedule") != 0 &&
-            strncmp(call->name, "memory_", 7) != 0 &&
-            strncmp(call->name, "schedule_", 9) != 0) {
-            return true;
-        }
+        stage |= mp_agent_policy_slow_stage(call->name);
     }
-    return false;
+    return stage;
 }
 
 static const char *progress_fallback(const mp_llm_result_t *result)
 {
     size_t offset = 0;
-    const mp_llm_call_t *selected = NULL;
     const mp_llm_call_t *call;
     while ((call = mp_llm_call_next(result, &offset))) {
-        if (!selected || strcmp(call->name, "time_now") != 0) {
-            selected = call;
-        }
-        if (strcmp(call->name, "time_now") != 0) {
-            break;
+        const char *fallback = mp_agent_policy_fallback(call->name);
+        if (fallback) {
+            return fallback;
         }
     }
-    if (!selected || strcmp(selected->name, "time_now") == 0) {
-        return "I'll check the current time.";
-    }
-    if (strcmp(selected->name, "web_search") == 0) {
-        return "I'll search the web for that.";
-    }
-    if (strcmp(selected->name, "web_fetch") == 0 || strcmp(selected->name, "rss_read") == 0) {
-        return "I'll read that source.";
-    }
-    if (strcmp(selected->name, "email_search") == 0 ||
-        strcmp(selected->name, "email_get") == 0) {
-        return "I'll check your email.";
-    }
-    if (strncmp(selected->name, "email_", 6) == 0) {
-        return "I'll handle that email.";
-    }
-    if (strcmp(selected->name, "calendar_list") == 0 ||
-        strcmp(selected->name, "calendar_get") == 0) {
-        return "I'll check your calendar.";
-    }
-    if (strncmp(selected->name, "calendar_", 9) == 0) {
-        return "I'll update your calendar.";
-    }
-    if (strcmp(selected->name, "schedule_list") == 0) {
-        return "I'll check your reminders.";
-    }
-    if (strncmp(selected->name, "schedule_", 9) == 0) {
-        return "I'll update your reminders.";
-    }
-    if (strcmp(selected->name, "memory_list") == 0) {
-        return "I'll check what I remember.";
-    }
-    if (strcmp(selected->name, "memory_save") == 0) {
-        return "I'll remember that.";
-    }
-    if (strcmp(selected->name, "diagnostics") == 0) {
-        return "I'll check the device.";
-    }
-    return "I'll work on that now.";
-}
-
-static uint8_t tool_read_bit(const char *name)
-{
-    if (strcmp(name, "memory_list") == 0) {
-        return READ_MEMORY;
-    }
-    if (strcmp(name, "schedule_list") == 0) {
-        return READ_SCHEDULE;
-    }
-    if (strcmp(name, "schedule_missed_list") == 0) {
-        return READ_MISSED;
-    }
-    if (strcmp(name, "email_search") == 0 || strcmp(name, "email_get") == 0) {
-        return READ_EMAIL;
-    }
-    if (strcmp(name, "calendar_list") == 0 || strcmp(name, "calendar_get") == 0) {
-        return READ_CALENDAR;
-    }
-    return 0;
-}
-
-static uint8_t tool_write_bit(const char *name)
-{
-    if (strcmp(name, "memory_save") == 0) {
-        return READ_MEMORY;
-    }
-    if (strcmp(name, "schedule_add") == 0 ||
-        strcmp(name, "schedule_update") == 0 ||
-        strcmp(name, "schedule_snooze") == 0 ||
-        strcmp(name, "schedule_run") == 0 ||
-        strcmp(name, "schedule_delete") == 0 ||
-        strcmp(name, "email_schedule") == 0) {
-        return READ_SCHEDULE;
-    }
-    if (strcmp(name, "schedule_missed_clear") == 0) {
-        return READ_MISSED;
-    }
-    if (strcmp(name, "email_modify") == 0 ||
-        strcmp(name, "email_trash") == 0 ||
-        strcmp(name, "email_untrash") == 0) {
-        return READ_EMAIL;
-    }
-    if (strcmp(name, "calendar_create") == 0 ||
-        strcmp(name, "calendar_update") == 0 ||
-        strcmp(name, "calendar_delete") == 0) {
-        return READ_CALENDAR;
-    }
-    return 0;
+    return NULL;
 }
 
 static bool append_progress(const mp_llm_result_t *result)
