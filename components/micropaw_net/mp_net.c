@@ -72,7 +72,8 @@ static bool content_type_allowed(const char *actual, const char *accepted)
     while (*accepted) {
         const char *end = strchr(accepted, ',');
         size_t length = end ? (size_t)(end - accepted) : strlen(accepted);
-        if (strncasecmp(actual, accepted, length) == 0) {
+        if (strncasecmp(actual, accepted, length) == 0 &&
+            (actual[length] == 0 || actual[length] == ';')) {
             return true;
         }
         accepted = end ? end + 1 : accepted + length;

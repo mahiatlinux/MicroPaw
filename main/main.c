@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "mp_agent.h"
+#include "mp_briefing.h"
 #include "mp_config.h"
 #include "mp_confirmation.h"
 #include "mp_context.h"
@@ -23,8 +24,11 @@
 #include "mp_wifi.h"
 #include "sdkconfig.h"
 
+#define CLI_STACK_SIZE \
+    (CONFIG_MICROPAW_CLI_STACK < 5120 ? 5120 : CONFIG_MICROPAW_CLI_STACK)
+
 static StaticTask_t s_cli_task_buffer;
-static StackType_t s_cli_stack[CONFIG_MICROPAW_CLI_STACK];
+static StackType_t s_cli_stack[CLI_STACK_SIZE];
 static TaskHandle_t s_cli_task;
 EXT_RAM_BSS_ATTR static char s_config_toml[MP_CONFIG_TOML_MAX + 1];
 static const char *TAG = "micropaw";
@@ -97,8 +101,11 @@ static void finish_output(const char *chat_id)
 
 static esp_err_t schedule_output(uint32_t id, const char *chat_id, const char *text)
 {
-    return mp_wifi_connected() ?
-           mp_agent_submit_scheduled(id, chat_id, text) : ESP_ERR_INVALID_STATE;
+    if (!mp_wifi_connected()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return id ? mp_agent_submit_scheduled(id, chat_id, text) :
+           mp_agent_submit(chat_id, text, true, pdMS_TO_TICKS(100));
 }
 
 static esp_err_t setup_console(void)
@@ -161,9 +168,8 @@ static void cli_line(char *line)
 {
     line[strcspn(line, "\r\n")] = 0;
     if (strcmp(line, "config") == 0) {
-        char output[1024];
-        mp_config_format(output, sizeof(output));
-        printf("%s", output);
+        mp_config_format(s_config_toml, sizeof(s_config_toml));
+        printf("%s", s_config_toml);
     } else if (strncmp(line, "set ", 4) == 0) {
         char *key = line + 4;
         char *value = strchr(key, ' ');
@@ -188,7 +194,7 @@ static void cli_line(char *line)
     } else if (strcmp(line, "erase-config YES") == 0) {
         printf("%s\n", esp_err_to_name(mp_config_erase()));
     } else if (strcmp(line, "metrics") == 0) {
-        char output[1536];
+        char output[2048];
         mp_metrics_format(output, sizeof(output));
         printf("%s", output);
     } else if (strcmp(line, "forget-telegram") == 0) {
@@ -224,6 +230,7 @@ static esp_err_t initialize(void)
         (error = mp_context_init()) != ESP_OK ||
         (error = mp_tools_init()) != ESP_OK ||
         (error = mp_agent_init(send_output, flush_output, finish_output)) != ESP_OK ||
+        (error = mp_briefing_init()) != ESP_OK ||
         (error = mp_scheduler_init(schedule_output)) != ESP_OK ||
         (error = mp_agent_start()) != ESP_OK ||
         (error = mp_scheduler_start()) != ESP_OK) {
@@ -250,10 +257,15 @@ static esp_err_t initialize(void)
             }
         }
 #endif
+        esp_err_t briefing_error = mp_briefing_start();
+        if (briefing_error != ESP_OK) {
+            ESP_LOGW(TAG, "Morning briefing disabled at runtime: %s",
+                     esp_err_to_name(briefing_error));
+        }
     } else {
         ESP_LOGW(TAG, "Wi-Fi disabled at runtime: %s", esp_err_to_name(error));
     }
-    s_cli_task = xTaskCreateStaticPinnedToCore(cli_task, "mp_cli", CONFIG_MICROPAW_CLI_STACK,
+    s_cli_task = xTaskCreateStaticPinnedToCore(cli_task, "mp_cli", CLI_STACK_SIZE,
                                                NULL, 3, s_cli_stack, &s_cli_task_buffer, 0);
     if (!s_cli_task) {
         return ESP_ERR_NO_MEM;

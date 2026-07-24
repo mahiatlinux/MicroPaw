@@ -24,6 +24,13 @@
 #define MP_HISTORY_ID_LEN 128
 #define MP_SCHEDULE_SLOTS 8
 #define MP_SCHEDULE_TEXT_LEN 1024
+#define MP_MEDIA_REF_ARENA_LEN 1024
+
+typedef enum {
+    MP_MEDIA_NONE,
+    MP_MEDIA_IMAGE_BYTES,
+    MP_MEDIA_IMAGE_URLS
+} mp_media_kind_t;
 
 typedef enum {
     MP_AGENT_IDLE,
@@ -39,8 +46,14 @@ typedef struct {
     char text[MP_MESSAGE_LEN];
     int64_t queued_us;
     uint32_t schedule_id;
+    uintptr_t media_data;
+    uint32_t media_size;
+    uint16_t media_refs_size;
+    uint8_t media_count;
+    mp_media_kind_t media_kind;
     bool proactive;
     TaskHandle_t waiter;
+    char media_refs[MP_MEDIA_REF_ARENA_LEN];
 } mp_message_t;
 
 typedef struct {

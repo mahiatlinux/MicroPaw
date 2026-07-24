@@ -232,6 +232,61 @@ class FirmwareContractTest(unittest.TestCase):
         self.assertIn("delivery = s_flush(message->chat_id, portMAX_DELAY)", agent)
         self.assertIn("scheduled for %s", tools)
 
+    def test_reminder_briefing_and_media_contract(self):
+        scheduler = source("components/micropaw_base/mp_scheduler.c")
+        tools = source("components/micropaw_tools/mp_tools.c")
+        agent = source("components/micropaw_agent/mp_agent.c")
+        briefing = source("components/micropaw_agent/mp_briefing.c")
+        llm = source("components/micropaw_agent/mp_llm.c")
+        telegram = source("components/micropaw_telegram/mp_telegram.c")
+        instagram = source("components/micropaw_instagram/mp_instagram.c")
+        config = source("components/micropaw_base/mp_config.c")
+        for name in [
+            "schedule_update",
+            "schedule_snooze",
+            "schedule_run",
+            "schedule_missed_list",
+            "schedule_missed_clear",
+        ]:
+            self.assertIn(f'\\"name\\":\\"{name}\\"', tools)
+        self.assertIn('nvs_set_blob(handle, "missed"', scheduler)
+        self.assertIn("find_pending_missed", scheduler)
+        self.assertIn("record->delivered", scheduler)
+        self.assertIn("s_emit(0,", scheduler)
+        self.assertIn("s_inflight[index] ? ESP_ERR_INVALID_STATE", scheduler)
+        self.assertIn("mp_scheduler_should_run", agent)
+        self.assertIn('strcmp(message->text, "/missed clear")', agent)
+        self.assertIn('strcmp(message->text, "/briefing on")', agent)
+        self.assertIn("BRIEFING_CATCHUP_SECONDS 14400", briefing)
+        self.assertIn("pending_day", briefing)
+        self.assertIn("delivered_day", briefing)
+        self.assertIn("skipped_day", briefing)
+        self.assertIn("mp_agent_submit_wait(config->owner_chat_id", briefing)
+        self.assertIn('{"morning_briefing_enabled", "briefing_on"', config)
+        self.assertIn('{"morning_briefing_time", "briefing_at"', config)
+        self.assertIn('{"transcription_model", "stt_model"', config)
+        self.assertIn('{"personality", "personality"', config)
+        self.assertIn("Owner-set personality:", agent)
+        compaction = agent[agent.index("static bool build_compaction_request(uint32_t remove_count)\n{"):
+                           agent.index("static void compact_context(bool force)\n{")]
+        self.assertNotIn("Owner-set personality:", compaction)
+        self.assertIn("MP_MEDIA_IMAGE_BYTES", agent)
+        self.assertIn("MP_MEDIA_IMAGE_URLS", agent)
+        self.assertIn('{\\"type\\":\\"input_image\\"', agent)
+        self.assertIn('mp_writer_raw(writer, ";base64,")', agent)
+        self.assertIn("mp_llm_stream_image", agent)
+        self.assertIn("write_image", llm)
+        self.assertIn("/v1/audio/transcriptions", llm)
+        self.assertIn("multipart/form-data; boundary=", llm)
+        self.assertIn("MEDIA_ARENA_SIZE (2U * 1024U * 1024U)", telegram)
+        self.assertIn("/getFile?file_id=", telegram)
+        self.assertIn("mp_agent_submit_image_bytes_wait", telegram)
+        self.assertIn("mp_llm_transcribe", telegram)
+        self.assertIn("collect_image_refs", instagram)
+        self.assertIn("mp_url_is_public_https", instagram)
+        self.assertIn("mp_agent_submit_image_urls_wait", instagram)
+        self.assertIn("scrub_media_references", agent)
+
 
 if __name__ == "__main__":
     unittest.main()

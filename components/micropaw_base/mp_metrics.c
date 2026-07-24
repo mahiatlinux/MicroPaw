@@ -36,6 +36,16 @@ typedef struct {
     char error_source[24];
     esp_err_t error;
     uint32_t error_count;
+    uint32_t media_download_ms;
+    size_t media_download_bytes;
+    uint32_t media_download_count;
+    uint32_t transcription_ms;
+    uint32_t transcription_count;
+    uint32_t missed_count;
+    uint32_t missed_late_ms;
+    uint32_t briefing_ms;
+    uint32_t briefing_count;
+    uint32_t briefing_delivered;
 } metrics_t;
 
 static const char *TAG = "metrics";
@@ -50,6 +60,10 @@ void mp_metrics_progress(void);
 void mp_metrics_inference(uint32_t elapsed_ms);
 void mp_metrics_tool(const char *name, uint32_t elapsed_ms);
 void mp_metrics_delivery(uint32_t elapsed_ms);
+void mp_metrics_media_download(uint32_t elapsed_ms, size_t bytes);
+void mp_metrics_transcription(uint32_t elapsed_ms);
+void mp_metrics_missed(uint32_t count, uint32_t late_ms);
+void mp_metrics_briefing(uint32_t elapsed_ms, bool delivered);
 void mp_metrics_http(int status, size_t bytes, uint32_t connect_ms, uint32_t first_byte_ms,
                      uint32_t total_ms, bool reused);
 void mp_metrics_error(const char *source, esp_err_t error);
@@ -115,6 +129,34 @@ void mp_metrics_delivery(uint32_t elapsed_ms)
     s_metrics.delivery_ms = elapsed_ms;
 }
 
+void mp_metrics_media_download(uint32_t elapsed_ms, size_t bytes)
+{
+    s_metrics.media_download_ms = elapsed_ms;
+    s_metrics.media_download_bytes = bytes;
+    s_metrics.media_download_count++;
+}
+
+void mp_metrics_transcription(uint32_t elapsed_ms)
+{
+    s_metrics.transcription_ms = elapsed_ms;
+    s_metrics.transcription_count++;
+}
+
+void mp_metrics_missed(uint32_t count, uint32_t late_ms)
+{
+    s_metrics.missed_count += count;
+    s_metrics.missed_late_ms = late_ms;
+}
+
+void mp_metrics_briefing(uint32_t elapsed_ms, bool delivered)
+{
+    s_metrics.briefing_ms = elapsed_ms;
+    s_metrics.briefing_count++;
+    if (delivered) {
+        s_metrics.briefing_delivered++;
+    }
+}
+
 void mp_metrics_http(int status, size_t bytes, uint32_t connect_ms, uint32_t first_byte_ms,
                      uint32_t total_ms, bool reused)
 {
@@ -147,6 +189,8 @@ void mp_metrics_format(char *output, size_t size)
         "google_response_capacity=%u page_download_capacity=%u search_response_capacity=%u incoming_text_capacity=%u email_body_capacity=%u decoded_email_capacity=%u page_records=%u\n"
         "memory_slots=%u memory_entry_capacity=%u scheduled_slots=%u scheduled_entry_capacity=%u\n"
         "last_request queue_ms=%lu typing_ms=%lu progress_ms=%lu inference_ms=%lu rounds=%lu tools=%lu tool_ms=%lu delivery_ms=%lu\n"
+        "media_downloads=%lu media_download_ms=%lu media_download_bytes=%lu transcriptions=%lu transcription_ms=%lu\n"
+        "missed_occurrences=%lu missed_late_ms=%lu briefings=%lu briefing_delivered=%lu briefing_ms=%lu\n"
         "slowest_tool=%s slowest_tool_ms=%lu\n"
         "context_bytes=%lu compactions=%lu compaction_ms=%lu compaction_failures=%lu\n"
         "last_http status=%d bytes=%lu connect_ms=%lu first_byte_ms=%lu total_ms=%lu reused=%s\n"
@@ -174,6 +218,16 @@ void mp_metrics_format(char *output, size_t size)
         (unsigned long)s_metrics.progress_ms, (unsigned long)s_metrics.inference_ms,
         (unsigned long)s_metrics.inference_rounds, (unsigned long)s_metrics.tool_count,
         (unsigned long)s_metrics.tool_ms, (unsigned long)s_metrics.delivery_ms,
+        (unsigned long)s_metrics.media_download_count,
+        (unsigned long)s_metrics.media_download_ms,
+        (unsigned long)s_metrics.media_download_bytes,
+        (unsigned long)s_metrics.transcription_count,
+        (unsigned long)s_metrics.transcription_ms,
+        (unsigned long)s_metrics.missed_count,
+        (unsigned long)s_metrics.missed_late_ms,
+        (unsigned long)s_metrics.briefing_count,
+        (unsigned long)s_metrics.briefing_delivered,
+        (unsigned long)s_metrics.briefing_ms,
         s_metrics.slowest_tool[0] ? s_metrics.slowest_tool : "none",
         (unsigned long)s_metrics.slowest_tool_ms, (unsigned long)mp_context_stored_bytes(),
         (unsigned long)mp_context_compaction_count(),
@@ -202,7 +256,7 @@ void mp_metrics_format(char *output, size_t size)
 
 void mp_metrics_log(void)
 {
-    char output[1536];
+    char output[2048];
     mp_metrics_format(output, sizeof(output));
     ESP_LOGI(TAG, "%s", output);
 }

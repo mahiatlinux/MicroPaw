@@ -17,6 +17,8 @@ typedef struct {
     char llm_model[96];
     char llm_endpoint[256];
     char llm_max_output_tokens[6];
+    char transcription_model[96];
+    char personality[769];
     char google_client_id[128];
     char google_client_secret[96];
     char google_refresh_token[256];
@@ -26,6 +28,8 @@ typedef struct {
     char email_permission[11];
     char calendar_permission[11];
     char timezone[64];
+    char morning_briefing_enabled[6];
+    char morning_briefing_time[6];
     char oled_enabled[6];
     char oled_height[3];
 } mp_config_t;

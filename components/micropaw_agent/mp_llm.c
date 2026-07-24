@@ -5,6 +5,7 @@
 
 #include "esp_system.h"
 #include "mp_config.h"
+#include "mp_json.h"
 #include "mp_metrics.h"
 #include "mp_net.h"
 #include "mp_wifi.h"
@@ -58,7 +59,25 @@ typedef struct {
 
 static sse_parser_t s_parser;
 static mp_http_session_t s_session;
+static mp_http_session_t s_transcription_session;
 static char s_boot_id[33];
+static char s_transcription_response[4096];
+
+typedef struct {
+    const char *body;
+    size_t image_offset;
+    const uint8_t *data;
+    size_t size;
+} image_write_t;
+
+typedef struct {
+    const char *prefix;
+    size_t prefix_size;
+    const uint8_t *data;
+    size_t size;
+    const char *suffix;
+    size_t suffix_size;
+} multipart_write_t;
 
 static bool provider(const mp_config_t *config, const char **url, bool *key_required);
 static uint8_t *arena_data(mp_llm_result_t *result);
@@ -80,6 +99,12 @@ static void json_byte(sse_parser_t *parser, char value);
 static void line_finish(sse_parser_t *parser);
 static void sse_byte(sse_parser_t *parser, char value);
 static bool sse_chunk(const uint8_t *data, size_t size, void *context);
+static esp_err_t write_all(esp_http_client_handle_t client, const void *data, size_t size);
+static esp_err_t write_image(esp_http_client_handle_t client, void *context);
+static esp_err_t write_multipart(esp_http_client_handle_t client, void *context);
+static esp_err_t stream_request(const char *body, size_t body_size,
+                                mp_http_write_fn write, void *write_context,
+                                mp_llm_result_t *result);
 esp_err_t mp_llm_init(void);
 bool mp_llm_ready(void);
 const char *mp_llm_boot_id(void);
@@ -88,6 +113,11 @@ bool mp_llm_parse_chunk(mp_llm_result_t *result, const uint8_t *data, size_t siz
 esp_err_t mp_llm_parse_finish(mp_llm_result_t *result);
 const mp_llm_call_t *mp_llm_call_next(const mp_llm_result_t *result, size_t *offset);
 esp_err_t mp_llm_stream(const char *body, mp_llm_result_t *result);
+esp_err_t mp_llm_stream_image(const char *body, size_t image_offset,
+                              const uint8_t *data, size_t size,
+                              mp_llm_result_t *result);
+esp_err_t mp_llm_transcribe(const uint8_t *data, size_t size, const char *mime_type,
+                            char *output, size_t output_size);
 
 static bool provider(const mp_config_t *config, const char **url, bool *key_required)
 {
@@ -636,6 +666,71 @@ static bool sse_chunk(const uint8_t *data, size_t size, void *context)
     return mp_llm_parse_chunk(context, data, size);
 }
 
+static esp_err_t write_all(esp_http_client_handle_t client, const void *data, size_t size)
+{
+    const uint8_t *bytes = data;
+    size_t written = 0;
+    while (written < size) {
+        int count = esp_http_client_write(client, (const char *)bytes + written,
+                                          size - written);
+        if (count <= 0) {
+            return ESP_ERR_HTTP_WRITE_DATA;
+        }
+        written += count;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t write_image(esp_http_client_handle_t client, void *context)
+{
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    image_write_t *image = context;
+    static const char placeholder[] = "__MP_IMAGE_BYTES__";
+    esp_err_t error = write_all(client, image->body, image->image_offset);
+    uint8_t encoded[1024];
+    size_t offset = 0;
+    while (error == ESP_OK && offset < image->size) {
+        size_t input = image->size - offset;
+        if (input > 768) {
+            input = 768;
+        }
+        size_t output = 0;
+        for (size_t index = 0; index < input; index += 3) {
+            size_t left = input - index;
+            uint32_t value = (uint32_t)image->data[offset + index] << 16;
+            if (left > 1) {
+                value |= (uint32_t)image->data[offset + index + 1] << 8;
+            }
+            if (left > 2) {
+                value |= image->data[offset + index + 2];
+            }
+            encoded[output++] = alphabet[(value >> 18) & 63];
+            encoded[output++] = alphabet[(value >> 12) & 63];
+            encoded[output++] = left > 1 ? alphabet[(value >> 6) & 63] : '=';
+            encoded[output++] = left > 2 ? alphabet[value & 63] : '=';
+        }
+        error = write_all(client, encoded, output);
+        offset += input;
+    }
+    if (error != ESP_OK) {
+        return error;
+    }
+    const char *suffix = image->body + image->image_offset + sizeof(placeholder) - 1;
+    return write_all(client, suffix, strlen(suffix));
+}
+
+static esp_err_t write_multipart(esp_http_client_handle_t client, void *context)
+{
+    multipart_write_t *multipart = context;
+    esp_err_t error = write_all(client, multipart->prefix, multipart->prefix_size);
+    if (error == ESP_OK) {
+        error = write_all(client, multipart->data, multipart->size);
+    }
+    return error == ESP_OK ?
+           write_all(client, multipart->suffix, multipart->suffix_size) : error;
+}
+
 esp_err_t mp_llm_init(void)
 {
     uint8_t random[16];
@@ -723,7 +818,9 @@ const mp_llm_call_t *mp_llm_call_next(const mp_llm_result_t *result, size_t *off
     return next;
 }
 
-esp_err_t mp_llm_stream(const char *body, mp_llm_result_t *result)
+static esp_err_t stream_request(const char *body, size_t body_size,
+                                mp_http_write_fn write, void *write_context,
+                                mp_llm_result_t *result)
 {
     const mp_config_t *config = mp_config_get();
     const char *url;
@@ -747,8 +844,10 @@ esp_err_t mp_llm_stream(const char *body, mp_llm_result_t *result)
         .method = HTTP_METHOD_POST,
         .headers = headers,
         .header_count = header_count,
-        .body = body,
-        .body_size = strlen(body),
+        .body = write ? NULL : body,
+        .body_size = body_size,
+        .write = write,
+        .write_context = write_context,
         .response_limit = CONFIG_MICROPAW_LLM_STREAM_LIMIT,
         .timeout_ms = 60000,
         .buffer_size = 4096,
@@ -777,4 +876,111 @@ esp_err_t mp_llm_stream(const char *body, mp_llm_result_t *result)
         return ESP_ERR_INVALID_RESPONSE;
     }
     return mp_llm_parse_finish(result);
+}
+
+esp_err_t mp_llm_stream(const char *body, mp_llm_result_t *result)
+{
+    return body ? stream_request(body, strlen(body), NULL, NULL, result) :
+           ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t mp_llm_stream_image(const char *body, size_t image_offset,
+                              const uint8_t *data, size_t size,
+                              mp_llm_result_t *result)
+{
+    static const char placeholder[] = "__MP_IMAGE_BYTES__";
+    size_t body_length = body ? strlen(body) : 0;
+    if (!body || !data || !size || image_offset + sizeof(placeholder) - 1 > body_length ||
+        memcmp(body + image_offset, placeholder, sizeof(placeholder) - 1) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    image_write_t image = {
+        .body = body,
+        .image_offset = image_offset,
+        .data = data,
+        .size = size
+    };
+    size_t encoded_size = ((size + 2) / 3) * 4;
+    size_t request_size = body_length - (sizeof(placeholder) - 1) + encoded_size;
+    return stream_request(body, request_size, write_image, &image, result);
+}
+
+esp_err_t mp_llm_transcribe(const uint8_t *data, size_t size, const char *mime_type,
+                            char *output, size_t output_size)
+{
+    const mp_config_t *config = mp_config_get();
+    const char *url;
+    const char *default_model;
+    if (strcmp(config->llm_provider, "openai") == 0) {
+        url = "https://api.openai.com/v1/audio/transcriptions";
+        default_model = "gpt-4o-mini-transcribe";
+    } else if (strcmp(config->llm_provider, "openrouter") == 0) {
+        url = "https://openrouter.ai/api/v1/audio/transcriptions";
+        default_model = "openai/gpt-4o-mini-transcribe";
+    } else {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (!data || !size || !mime_type || !output || output_size < 2 ||
+        !config->llm_api_key[0]) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    static const char boundary[] = "----micropaw-transcription";
+    char prefix[512];
+    char suffix[64];
+    const char *model = config->transcription_model[0] ?
+                        config->transcription_model : default_model;
+    int prefix_size = snprintf(
+        prefix, sizeof(prefix),
+        "--%s\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n%s\r\n"
+        "--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice.ogg\"\r\n"
+        "Content-Type: %s\r\n\r\n",
+        boundary, model, boundary, mime_type);
+    int suffix_size = snprintf(suffix, sizeof(suffix), "\r\n--%s--\r\n", boundary);
+    if (prefix_size < 0 || suffix_size < 0 ||
+        (size_t)prefix_size >= sizeof(prefix) || (size_t)suffix_size >= sizeof(suffix)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    multipart_write_t multipart = {
+        .prefix = prefix,
+        .prefix_size = (size_t)prefix_size,
+        .data = data,
+        .size = size,
+        .suffix = suffix,
+        .suffix_size = (size_t)suffix_size
+    };
+    char authorization[272];
+    char content_type[96];
+    snprintf(authorization, sizeof(authorization), "Bearer %s", config->llm_api_key);
+    snprintf(content_type, sizeof(content_type), "multipart/form-data; boundary=%s", boundary);
+    mp_http_header_t headers[] = {
+        {"Authorization", authorization},
+        {"Content-Type", content_type}
+    };
+    mp_http_request_t request = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .headers = headers,
+        .header_count = 2,
+        .body_size = multipart.prefix_size + size + multipart.suffix_size,
+        .write = write_multipart,
+        .write_context = &multipart,
+        .response_limit = sizeof(s_transcription_response) - 1,
+        .timeout_ms = 60000,
+        .buffer_size = 4096,
+        .accepted_content_types = "application/json"
+    };
+    mp_http_response_t response;
+    mp_wifi_wait(portMAX_DELAY);
+    esp_err_t error = mp_http_session_collect(&s_transcription_session, &request,
+                                              s_transcription_response,
+                                              sizeof(s_transcription_response), &response);
+    if (error != ESP_OK) {
+        return error;
+    }
+    if (response.status != 200 || response.truncated) {
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    return mp_json_get_string(s_transcription_response, strlen(s_transcription_response),
+                              "text", output, output_size) && output[0] ?
+           ESP_OK : ESP_ERR_INVALID_RESPONSE;
 }
