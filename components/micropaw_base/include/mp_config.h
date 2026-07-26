@@ -32,6 +32,9 @@ typedef struct {
     char morning_briefing_time[6];
     char oled_enabled[6];
     char oled_height[3];
+    char brave_api_key[96];
+    char brave_country[3];
+    char brave_search_lang[12];
 } mp_config_t;
 
 esp_err_t mp_config_init(void);

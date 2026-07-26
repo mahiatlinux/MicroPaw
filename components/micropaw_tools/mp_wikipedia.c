@@ -26,7 +26,8 @@ typedef struct {
 static void strip_excerpt(const char *source, char *output, size_t size);
 static void wiki_object(wiki_parser_t *parser);
 static bool wiki_chunk(const uint8_t *data, size_t size, void *context);
-static esp_err_t wikipedia_search(const char *query, mp_search_result_t *results, size_t *count);
+static esp_err_t wikipedia_search(const char *query, mp_search_result_t *results, size_t *count,
+                                  char *error_text, size_t error_size);
 
 const mp_search_provider_t mp_wikipedia_provider = {"wikipedia", wikipedia_search};
 
@@ -131,8 +132,11 @@ static bool wiki_chunk(const uint8_t *data, size_t size, void *context)
     return true;
 }
 
-static esp_err_t wikipedia_search(const char *query, mp_search_result_t *results, size_t *count)
+static esp_err_t wikipedia_search(const char *query, mp_search_result_t *results, size_t *count,
+                                  char *error_text, size_t error_size)
 {
+    (void)error_text;
+    (void)error_size;
     char encoded[768];
     char url[896];
     mp_url_encode(query, encoded, sizeof(encoded));

@@ -17,7 +17,8 @@ typedef struct {
 
 typedef struct {
     const char *name;
-    esp_err_t (*search)(const char *query, mp_search_result_t *results, size_t *count);
+    esp_err_t (*search)(const char *query, mp_search_result_t *results, size_t *count,
+                        char *error_text, size_t error_size);
 } mp_search_provider_t;
 
 const mp_search_provider_t *mp_search_provider(const char *name);

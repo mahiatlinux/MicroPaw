@@ -26,6 +26,9 @@ morning_briefing_enabled = false
 morning_briefing_time = "08:00"
 oled_enabled = false
 oled_height = "64"
+brave_api_key = "API_KEY"
+brave_country = "NZ"
+brave_search_lang = "en"
 ```
 
 After the first flash, push the TOML file over USB. On macOS or Linux:
@@ -41,6 +44,19 @@ $push = [scriptblock]::Create((irm https://github.com/mahiatlinux/MicroPaw/relea
 ```
 
 The uploaders use only Python's standard library on macOS and Linux, and built-in PowerShell APIs on Windows. They find the port when one matching device is connected. Use `--port PORT` or `-Port PORT` when needed. The TOML file stays on the computer.
+
+## Brave search
+
+Web search uses the [Brave Search API](https://api.search.brave.com/app/documentation/web-search/get-started). Get a key:
+
+1. Create an account at [api.search.brave.com](https://api.search.brave.com/app/keys)
+2. Subscribe to Search. It costs $5 per 1,000 requests, includes $5 in monthly credit and requires a payment card for account verification
+3. Copy the API key into `brave_api_key`
+4. Set `brave_country` to a two-letter country code for local ranking, or leave it empty
+5. Set `brave_search_lang` to the result language
+6. Push the TOML again and reboot
+
+Without a key the `web_search` tool returns an error. Wikipedia and arXiv providers do not need a key.
 
 ## Permission modes
 

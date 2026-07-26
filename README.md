@@ -12,7 +12,7 @@ Personal assistant firmware for ESP32-S3. Runs GPT-5.6 Luna on the device with T
 
 - LLM agent with tool calling (OpenAI, OpenRouter or custom Responses endpoint)
 - Telegram and optional Instagram messaging
-- DuckDuckGo search, Wikipedia, arXiv, RSS/Atom readers
+- Brave search, Wikipedia, arXiv, RSS/Atom readers
 - Gmail (read, send, schedule, labels) and Google Calendar (list, create, update, delete)
 - Voice note transcription and photo input
 - Persistent memory (8 entries) and scheduled reminders (8 jobs)

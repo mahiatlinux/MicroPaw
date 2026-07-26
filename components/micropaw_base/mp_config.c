@@ -46,7 +46,10 @@ static const config_field_t s_fields[] = {
     {"morning_briefing_enabled", "briefing_on", offsetof(mp_config_t, morning_briefing_enabled), sizeof(s_config.morning_briefing_enabled), false},
     {"morning_briefing_time", "briefing_at", offsetof(mp_config_t, morning_briefing_time), sizeof(s_config.morning_briefing_time), false},
     {"oled_enabled", "oled", offsetof(mp_config_t, oled_enabled), sizeof(s_config.oled_enabled), false},
-    {"oled_height", "oled_h", offsetof(mp_config_t, oled_height), sizeof(s_config.oled_height), false}
+    {"oled_height", "oled_h", offsetof(mp_config_t, oled_height), sizeof(s_config.oled_height), false},
+    {"brave_api_key", "brave_key", offsetof(mp_config_t, brave_api_key), sizeof(s_config.brave_api_key), true},
+    {"brave_country", "brave_country", offsetof(mp_config_t, brave_country), sizeof(s_config.brave_country), false},
+    {"brave_search_lang", "brave_lang", offsetof(mp_config_t, brave_search_lang), sizeof(s_config.brave_search_lang), false}
 };
 
 static void config_defaults(void);
@@ -84,6 +87,7 @@ static void config_defaults(void)
             sizeof(s_config.morning_briefing_time));
     strlcpy(s_config.oled_enabled, "false", sizeof(s_config.oled_enabled));
     strlcpy(s_config.oled_height, "64", sizeof(s_config.oled_height));
+    strlcpy(s_config.brave_search_lang, "en", sizeof(s_config.brave_search_lang));
 }
 
 static size_t field_count(void)
@@ -155,6 +159,22 @@ static bool valid_value(config_field_t field, const char *value)
     }
     if (strcmp(field.name, "oled_height") == 0) {
         return strcmp(value, "32") == 0 || strcmp(value, "64") == 0;
+    }
+    if (strcmp(field.name, "brave_country") == 0) {
+        return !value[0] || (strlen(value) == 2 &&
+               value[0] >= 'A' && value[0] <= 'Z' &&
+               value[1] >= 'A' && value[1] <= 'Z');
+    }
+    if (strcmp(field.name, "brave_search_lang") == 0) {
+        size_t length = strlen(value);
+        if (length < 2) {
+            return false;
+        }
+        for (size_t index = 0; index < length; index++) {
+            if ((value[index] < 'a' || value[index] > 'z') && value[index] != '-') {
+                return false;
+            }
+        }
     }
     return true;
 }

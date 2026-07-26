@@ -39,7 +39,8 @@ static void feed_tag(feed_parser_t *parser);
 static void feed_cdata(feed_parser_t *parser, char value);
 static bool feed_chunk(const uint8_t *data, size_t size, void *context);
 static esp_err_t feed_request(const char *url, mp_search_result_t *results, size_t *count);
-static esp_err_t arxiv_search(const char *query, mp_search_result_t *results, size_t *count);
+static esp_err_t arxiv_search(const char *query, mp_search_result_t *results, size_t *count,
+                              char *error_text, size_t error_size);
 esp_err_t mp_rss_read(const char *url, char *output, size_t size);
 
 const mp_search_provider_t mp_arxiv_provider = {"arxiv", arxiv_search};
@@ -207,8 +208,11 @@ static esp_err_t feed_request(const char *url, mp_search_result_t *results, size
     return parser.count ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
-static esp_err_t arxiv_search(const char *query, mp_search_result_t *results, size_t *count)
+static esp_err_t arxiv_search(const char *query, mp_search_result_t *results, size_t *count,
+                              char *error_text, size_t error_size)
 {
+    (void)error_text;
+    (void)error_size;
     char terms[704];
     char encoded[768];
     char url[896];

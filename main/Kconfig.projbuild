@@ -9,7 +9,7 @@ config MICROPAW_INSTAGRAM
     default y
 
 config MICROPAW_WEB_SEARCH
-    bool "DuckDuckGo Lite search"
+    bool "Brave web search"
     default y
 
 config MICROPAW_WEB_FETCH
