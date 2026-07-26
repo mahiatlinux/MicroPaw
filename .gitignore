@@ -8,3 +8,4 @@ reports/*.txt
 secrets/
 workspace/
 **/.DS_Store
+AGENTS.md
