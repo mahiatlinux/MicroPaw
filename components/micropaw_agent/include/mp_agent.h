@@ -18,6 +18,7 @@ esp_err_t mp_agent_submit_image_urls_wait(const char *chat_id, const char *text,
                                           const char *references, size_t references_size,
                                           uint8_t count);
 esp_err_t mp_agent_submit_scheduled(uint32_t id, const char *chat_id, const char *text);
+bool mp_agent_handle_command(const char *chat_id, const char *text);
 void mp_agent_reset_confirmation(void);
 mp_agent_state_t mp_agent_state(void);
 TaskHandle_t mp_agent_task_handle(void);

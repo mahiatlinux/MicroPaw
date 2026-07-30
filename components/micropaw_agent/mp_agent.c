@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "freertos/semphr.h"
 #include "mp_agent_policy.h"
 #include "mp_config.h"
 #include "mp_briefing.h"
@@ -28,6 +29,7 @@ extern const char scheduled_txt[] asm("_binary_scheduled_txt_start");
 
 #define AGENT_QUEUE_LENGTH 4
 #define AGENT_INSTRUCTIONS_LEN (MP_MEMORY_SLOTS * (MP_MEMORY_TEXT_LEN + 3) + 4096)
+#define COMMAND_OUTPUT_LEN (MP_SCHEDULE_SLOTS * MP_SCHEDULE_TEXT_LEN + 2048)
 #define IMAGE_PLACEHOLDER "__MP_IMAGE_BYTES__"
 
 typedef struct {
@@ -43,6 +45,7 @@ EXT_RAM_BSS_ATTR static char s_tool_trace[MP_TOOL_TRACE_LEN];
 EXT_RAM_BSS_ATTR static char s_tool_output[MP_TOOL_RESULT_LEN];
 EXT_RAM_BSS_ATTR static char s_confirm_tool[MP_TOOL_NAME_LEN];
 EXT_RAM_BSS_ATTR static char s_confirm_arguments[MP_TOOL_ARGS_LEN + 1];
+EXT_RAM_BSS_ATTR static char s_command_output[COMMAND_OUTPUT_LEN];
 EXT_RAM_BSS_ATTR static mp_llm_result_t s_result;
 static StaticQueue_t s_queue_buffer;
 static uint8_t s_queue_storage[AGENT_QUEUE_LENGTH * sizeof(mp_message_t)];
@@ -50,6 +53,8 @@ static QueueHandle_t s_queue;
 static StaticTask_t s_task_buffer;
 static StackType_t s_task_stack[CONFIG_MICROPAW_AGENT_STACK];
 static TaskHandle_t s_task;
+static StaticSemaphore_t s_command_lock_buffer;
+static SemaphoreHandle_t s_command_lock;
 static mp_send_fn s_send;
 static mp_flush_fn s_flush;
 static mp_finish_fn s_finish;
@@ -62,6 +67,7 @@ static const char *TAG = "agent";
 static void agent_task(void *argument);
 static bool process_message(const mp_message_t *message);
 static bool handle_command(const mp_message_t *message);
+static bool handle_quick_command(const char *chat_id, const char *text);
 static bool owner_message(const mp_message_t *message);
 static void reset_confirmation(void);
 static esp_err_t reset_state(void);
@@ -100,6 +106,7 @@ esp_err_t mp_agent_submit_image_urls_wait(const char *chat_id, const char *text,
                                           const char *references, size_t references_size,
                                           uint8_t count);
 esp_err_t mp_agent_submit_scheduled(uint32_t id, const char *chat_id, const char *text);
+bool mp_agent_handle_command(const char *chat_id, const char *text);
 void mp_agent_reset_confirmation(void);
 mp_agent_state_t mp_agent_state(void);
 TaskHandle_t mp_agent_task_handle(void);
@@ -277,30 +284,7 @@ static bool process_message(const mp_message_t *message)
 
 static bool handle_command(const mp_message_t *message)
 {
-    if (strcmp(message->text, "/help") == 0 || strcmp(message->text, "/start") == 0) {
-        send_text(message->chat_id,
-                  "MicroPaw is ready. Commands: /metrics, /memory, /jobs, /missed, /missed clear, /briefing, /briefing on, /briefing off, /briefing HH:MM, /forget, /reset, /reset cancel, /update, /confirm ID, /cancel ID.",
-                  true);
-        return true;
-    }
-    if (strcmp(message->text, "/metrics") == 0) {
-        mp_metrics_format(s_tool_output, sizeof(s_tool_output));
-        send_text(message->chat_id, s_tool_output, true);
-        return true;
-    }
-    if (strcmp(message->text, "/memory") == 0) {
-        mp_memory_format(s_tool_output, sizeof(s_tool_output));
-        send_text(message->chat_id, s_tool_output[0] ? s_tool_output : "No saved memory.", true);
-        return true;
-    }
-    if (strcmp(message->text, "/jobs") == 0) {
-        mp_scheduler_format(s_tool_output, sizeof(s_tool_output));
-        send_text(message->chat_id, s_tool_output, true);
-        return true;
-    }
-    if (strcmp(message->text, "/missed") == 0) {
-        mp_scheduler_missed_format(s_tool_output, sizeof(s_tool_output));
-        send_text(message->chat_id, s_tool_output, true);
+    if (handle_quick_command(message->chat_id, message->text)) {
         return true;
     }
     if (strcmp(message->text, "/missed clear") == 0) {
@@ -308,15 +292,6 @@ static bool handle_command(const mp_message_t *message)
         send_text(message->chat_id,
                   error == ESP_OK ? "Delivered missed-reminder history cleared. Pending deliveries remain." :
                   esp_err_to_name(error), true);
-        return true;
-    }
-    if (strcmp(message->text, "/briefing") == 0) {
-        if (!owner_message(message)) {
-            send_text(message->chat_id, "Owner only.", true);
-        } else {
-            mp_briefing_format(s_tool_output, sizeof(s_tool_output));
-            send_text(message->chat_id, s_tool_output, true);
-        }
         return true;
     }
     if (strcmp(message->text, "/briefing on") == 0 ||
@@ -436,6 +411,44 @@ static bool handle_command(const mp_message_t *message)
         return true;
     }
     return false;
+}
+
+static bool handle_quick_command(const char *chat_id, const char *text)
+{
+    if (!s_command_lock || xSemaphoreTake(s_command_lock, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    bool handled = true;
+    if (strcmp(text, "/help") == 0 || strcmp(text, "/start") == 0) {
+        send_text(chat_id,
+                  "MicroPaw is ready. Commands: /metrics, /memory, /jobs, /missed, /missed clear, /briefing, /briefing on, /briefing off, /briefing HH:MM, /forget, /reset, /reset cancel, /update, /confirm ID, /cancel ID.",
+                  true);
+    } else if (strcmp(text, "/metrics") == 0) {
+        mp_metrics_format(s_command_output, sizeof(s_command_output));
+        send_text(chat_id, s_command_output, true);
+    } else if (strcmp(text, "/memory") == 0) {
+        mp_memory_format(s_command_output, sizeof(s_command_output));
+        send_text(chat_id, s_command_output[0] ? s_command_output : "No saved memory.", true);
+    } else if (strcmp(text, "/jobs") == 0) {
+        mp_scheduler_format(s_command_output, sizeof(s_command_output));
+        send_text(chat_id, s_command_output, true);
+    } else if (strcmp(text, "/missed") == 0) {
+        mp_scheduler_missed_format(s_command_output, sizeof(s_command_output));
+        send_text(chat_id, s_command_output, true);
+    } else if (strcmp(text, "/briefing") == 0) {
+        const char *owner = mp_config_get()->owner_chat_id;
+        if ((!owner[0] || strcmp(chat_id, owner) != 0) &&
+            strncmp(chat_id, "ig:", 3) != 0) {
+            send_text(chat_id, "Owner only.", true);
+        } else {
+            mp_briefing_format(s_command_output, sizeof(s_command_output));
+            send_text(chat_id, s_command_output, true);
+        }
+    } else {
+        handled = false;
+    }
+    xSemaphoreGive(s_command_lock);
+    return handled;
 }
 
 static bool owner_message(const mp_message_t *message)
@@ -839,6 +852,10 @@ esp_err_t mp_agent_init(mp_send_fn send, mp_flush_fn flush, mp_finish_fn finish)
     s_send = send;
     s_flush = flush;
     s_finish = finish;
+    s_command_lock = xSemaphoreCreateMutexStatic(&s_command_lock_buffer);
+    if (!s_command_lock) {
+        return ESP_ERR_NO_MEM;
+    }
     esp_err_t error = mp_llm_init();
     if (error != ESP_OK) {
         return error;
@@ -931,6 +948,11 @@ esp_err_t mp_agent_submit_scheduled(uint32_t id, const char *chat_id, const char
            ESP_ERR_INVALID_ARG;
 }
 
+bool mp_agent_handle_command(const char *chat_id, const char *text)
+{
+    return chat_id && text && handle_quick_command(chat_id, text);
+}
+
 static esp_err_t submit_message(uint32_t schedule_id, const char *chat_id, const char *text,
                                 bool proactive, TaskHandle_t waiter, TickType_t timeout,
                                 mp_media_kind_t media_kind, const uint8_t *media_data,
@@ -960,7 +982,10 @@ static esp_err_t submit_message(uint32_t schedule_id, const char *chat_id, const
     if (references_size) {
         memcpy(message.media_refs, references, references_size);
     }
-    return xQueueSend(s_queue, &message, timeout) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+    BaseType_t queued = !schedule_id && media_kind == MP_MEDIA_NONE && text[0] == '/' ?
+                        xQueueSendToFront(s_queue, &message, timeout) :
+                        xQueueSend(s_queue, &message, timeout);
+    return queued == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 mp_agent_state_t mp_agent_state(void)

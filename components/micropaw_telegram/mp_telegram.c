@@ -82,7 +82,7 @@ static const char *TAG = "telegram";
 static void telegram_task(void *argument);
 static void sender_task(void *argument);
 static esp_err_t poll_once(void);
-static void process_update(const char *update, size_t length);
+static esp_err_t process_update(const char *update, size_t length);
 static bool media_chunk(const uint8_t *data, size_t size, void *context);
 static bool media_type(const char *actual, const char *expected);
 static esp_err_t file_reference(const char *file_id, char *path, size_t path_size,
@@ -207,18 +207,22 @@ static esp_err_t poll_once(void)
     const char *update;
     size_t update_length;
     if (mp_json_first(results, results_length, &update, &update_length)) {
-        process_update(update, update_length);
+        int64_t update_id;
+        if (!mp_json_get_int64(update, update_length, "update_id", &update_id)) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        error = process_update(update, update_length);
+        if (error != ESP_OK) {
+            return error;
+        }
+        s_offset = update_id + 1;
     }
     return ESP_OK;
 }
 
-static void process_update(const char *update, size_t length)
+static esp_err_t process_update(const char *update, size_t length)
 {
     const mp_config_t *config = mp_config_get();
-    int64_t update_id;
-    if (mp_json_get_int64(update, length, "update_id", &update_id)) {
-        s_offset = update_id + 1;
-    }
     const char *message;
     const char *chat;
     size_t message_length;
@@ -227,12 +231,12 @@ static void process_update(const char *update, size_t length)
     if (!mp_json_get_slice(update, length, "message", &message, &message_length) ||
         !mp_json_get_slice(message, message_length, "chat", &chat, &chat_length) ||
         !mp_json_get_int64(chat, chat_length, "id", &chat_id)) {
-        return;
+        return ESP_OK;
     }
     char id[MP_CHAT_ID_LEN];
     snprintf(id, sizeof(id), "%lld", (long long)chat_id);
     if (strcmp(id, config->owner_chat_id) != 0) {
-        return;
+        return ESP_OK;
     }
     int64_t queued_us = esp_timer_get_time();
     const char *photo;
@@ -243,24 +247,28 @@ static void process_update(const char *update, size_t length)
         mp_telegram_typing_start(id, queued_us);
         mp_display_agent_begin();
         process_photo(id, message, message_length, queued_us);
-        return;
+        return ESP_OK;
     }
     if (mp_json_get_slice(message, message_length, "voice", &voice, &voice_length)) {
         mp_telegram_typing_start(id, queued_us);
         mp_display_agent_begin();
         process_voice(id, message, message_length, queued_us);
-        return;
+        return ESP_OK;
     }
     if (!mp_json_get_string(message, message_length, "text", s_message, sizeof(s_message))) {
         mp_telegram_send(id, "Unsupported media or message too long for the device input buffer.");
         mp_telegram_typing_stop(id);
-        return;
+        return ESP_OK;
+    }
+    if (mp_agent_handle_command(id, s_message)) {
+        return ESP_OK;
     }
     mp_telegram_typing_start(id, queued_us);
-    if (mp_agent_submit(id, s_message, false, portMAX_DELAY) != ESP_OK) {
-        mp_telegram_send(id, "MicroPaw is busy. Try again shortly.");
+    esp_err_t error = mp_agent_submit(id, s_message, false, portMAX_DELAY);
+    if (error != ESP_OK) {
         mp_telegram_typing_stop(id);
     }
+    return error;
 }
 
 static bool media_chunk(const uint8_t *data, size_t size, void *context)

@@ -40,11 +40,12 @@ uint8_t mp_agent_policy_required(const char *name)
     if (strcmp(name, "schedule_add") == 0 || strcmp(name, "email_schedule") == 0) {
         return MP_AGENT_READ_TIME;
     }
-    if (strcmp(name, "schedule_update") == 0) {
+    if (strcmp(name, "schedule_update") == 0 ||
+        strcmp(name, "schedule_snooze") == 0 ||
+        strcmp(name, "email_schedule_update") == 0) {
         return MP_AGENT_READ_SCHEDULE | MP_AGENT_READ_TIME;
     }
-    if (strcmp(name, "schedule_snooze") == 0 ||
-        strcmp(name, "schedule_run") == 0 ||
+    if (strcmp(name, "schedule_run") == 0 ||
         strcmp(name, "schedule_delete") == 0) {
         return MP_AGENT_READ_SCHEDULE;
     }
@@ -73,7 +74,9 @@ uint8_t mp_agent_policy_slow_stage(const char *name)
         strcmp(name, "rss_read") == 0) {
         return MP_AGENT_SLOW_WEB;
     }
-    if (strncmp(name, "email_", 6) == 0 && strcmp(name, "email_schedule") != 0) {
+    if (strncmp(name, "email_", 6) == 0 &&
+        strcmp(name, "email_schedule") != 0 &&
+        strcmp(name, "email_schedule_update") != 0) {
         return MP_AGENT_SLOW_EMAIL;
     }
     return strncmp(name, "calendar_", 9) == 0 ? MP_AGENT_SLOW_CALENDAR : 0;
@@ -88,6 +91,7 @@ const char *mp_agent_policy_fallback(const char *name)
         return "I'll check the time and set that reminder.";
     }
     if (strcmp(name, "schedule_update") == 0 ||
+        strcmp(name, "email_schedule_update") == 0 ||
         strcmp(name, "schedule_snooze") == 0 ||
         strcmp(name, "schedule_run") == 0 ||
         strcmp(name, "schedule_delete") == 0) {

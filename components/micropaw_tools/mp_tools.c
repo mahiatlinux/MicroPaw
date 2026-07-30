@@ -14,6 +14,7 @@
 #include "mp_scheduler.h"
 #include "mp_search.h"
 #include "mp_services.h"
+#include "mp_time.h"
 #include "sdkconfig.h"
 
 #if CONFIG_MICROPAW_WIKIPEDIA
@@ -56,6 +57,8 @@ EXT_RAM_BSS_ATTR static char s_arg5[128];
 
 static bool json_string(const char *json, const char *name, char *output, size_t size);
 static bool json_uint(const char *json, const char *name, uint32_t *value);
+static esp_err_t schedule_epoch(const char *arguments, char *output, size_t size,
+                                int64_t *epoch);
 static bool build_catalog(char *output, size_t size);
 static void schedule_result(char *output, size_t size, const char *kind,
                             uint32_t id, int64_t epoch);
@@ -79,6 +82,8 @@ static esp_err_t rss_read(const char *arguments, const mp_tool_context_t *contex
 #if CONFIG_MICROPAW_GMAIL
 static esp_err_t email_send(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t email_schedule(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t email_schedule_update(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
+static esp_err_t email_payload(const char *arguments, char *output, size_t size);
 static esp_err_t email_search(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t email_get(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
 static esp_err_t email_modify(const char *arguments, const mp_tool_context_t *context, char *output, size_t size);
@@ -104,10 +109,10 @@ esp_err_t mp_tools_execute_scheduled(const char *text, const mp_tool_context_t *
 static const tool_t s_tools[] = {
     {"memory_save", "{\"type\":\"function\",\"name\":\"memory_save\",\"description\":\"Save one durable fact of up to 1023 bytes for later conversations. Call memory_list and wait for its result before saving. Save separate facts with separate calls.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"note\":{\"type\":\"string\"}},\"required\":[\"note\"],\"additionalProperties\":false}}", memory_save},
     {"memory_list", "{\"type\":\"function\",\"name\":\"memory_list\",\"description\":\"Read durable facts.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", memory_list},
-    {"schedule_add", "{\"type\":\"function\",\"name\":\"schedule_add\",\"description\":\"Schedule a future assistant turn. Call time_now and wait for its result before calculating delay_seconds, even for a relative delay. repeat_seconds is zero for a one-time job.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"prompt\",\"delay_seconds\",\"repeat_seconds\"],\"additionalProperties\":false}}", schedule_add},
+    {"schedule_add", "{\"type\":\"function\",\"name\":\"schedule_add\",\"description\":\"Schedule a future assistant turn in the device's local timezone. Call time_now and wait for its result before resolving the date. Pass the user's AM or PM unchanged with a 12-hour time; use 24H only when the user gave a 24-hour time. repeat_seconds is zero for a one-time job.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"date\":{\"type\":\"string\",\"description\":\"Local date as YYYY-MM-DD\"},\"time\":{\"type\":\"string\",\"description\":\"Local time as HH:MM\"},\"meridiem\":{\"type\":\"string\",\"enum\":[\"AM\",\"PM\",\"24H\"]},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"prompt\",\"date\",\"time\",\"meridiem\",\"repeat_seconds\"],\"additionalProperties\":false}}", schedule_add},
     {"schedule_list", "{\"type\":\"function\",\"name\":\"schedule_list\",\"description\":\"List scheduled jobs.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", schedule_list},
-    {"schedule_update", "{\"type\":\"function\",\"name\":\"schedule_update\",\"description\":\"Replace a scheduled job prompt and timing while preserving its ID and delivery channel. Call schedule_list and time_now, then wait for both results before calculating delay_seconds or making this change. A running job cannot be updated.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"},\"prompt\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"id\",\"prompt\",\"delay_seconds\",\"repeat_seconds\"],\"additionalProperties\":false}}", schedule_update},
-    {"schedule_snooze", "{\"type\":\"function\",\"name\":\"schedule_snooze\",\"description\":\"Move a scheduled job's next occurrence to delay_seconds from now. Call schedule_list and wait for its result before calculating the delay. A running job cannot be snoozed.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"},\"delay_seconds\":{\"type\":\"integer\"}},\"required\":[\"id\",\"delay_seconds\"],\"additionalProperties\":false}}", schedule_snooze},
+    {"schedule_update", "{\"type\":\"function\",\"name\":\"schedule_update\",\"description\":\"Replace a reminder's prompt and local timing while preserving its ID and delivery channel. Call schedule_list and time_now, then wait for both results. Use email_schedule_update for scheduled emails. Pass AM or PM unchanged. A running job cannot be updated.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"},\"prompt\":{\"type\":\"string\"},\"date\":{\"type\":\"string\",\"description\":\"Local date as YYYY-MM-DD\"},\"time\":{\"type\":\"string\",\"description\":\"Local time as HH:MM\"},\"meridiem\":{\"type\":\"string\",\"enum\":[\"AM\",\"PM\",\"24H\"]},\"repeat_seconds\":{\"type\":\"integer\"}},\"required\":[\"id\",\"prompt\",\"date\",\"time\",\"meridiem\",\"repeat_seconds\"],\"additionalProperties\":false}}", schedule_update},
+    {"schedule_snooze", "{\"type\":\"function\",\"name\":\"schedule_snooze\",\"description\":\"Move a scheduled job's next occurrence to an exact local date and time. Call schedule_list and time_now, then wait for both results. Pass AM or PM unchanged. A running job cannot be snoozed.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"},\"date\":{\"type\":\"string\",\"description\":\"Local date as YYYY-MM-DD\"},\"time\":{\"type\":\"string\",\"description\":\"Local time as HH:MM\"},\"meridiem\":{\"type\":\"string\",\"enum\":[\"AM\",\"PM\",\"24H\"]}},\"required\":[\"id\",\"date\",\"time\",\"meridiem\"],\"additionalProperties\":false}}", schedule_snooze},
     {"schedule_run", "{\"type\":\"function\",\"name\":\"schedule_run\",\"description\":\"Queue an immediate separate copy of a scheduled job without changing the original schedule. Call schedule_list and wait for its result first.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", schedule_run},
     {"schedule_delete", "{\"type\":\"function\",\"name\":\"schedule_delete\",\"description\":\"Delete a scheduled job by ID after calling schedule_list and waiting for its result.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", schedule_delete},
     {"schedule_missed_list", "{\"type\":\"function\",\"name\":\"schedule_missed_list\",\"description\":\"List pending and delivered missed reminders.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}}", schedule_missed_list},
@@ -125,7 +130,8 @@ static const tool_t s_tools[] = {
 #endif
 #if CONFIG_MICROPAW_GMAIL
     {"email_send", "{\"type\":\"function\",\"name\":\"email_send\",\"description\":\"Send a plain-text email through Gmail. The body uses the configured PSRAM work-text capacity.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"to\",\"subject\",\"body\"],\"additionalProperties\":false}}", email_send},
-    {"email_schedule", "{\"type\":\"function\",\"name\":\"email_schedule\",\"description\":\"Schedule an exact plain-text Gmail email. Call time_now and wait for its result before calculating delay_seconds, even for a relative delay. The current email permission is checked when it is due.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"delay_seconds\":{\"type\":\"integer\"}},\"required\":[\"to\",\"subject\",\"body\",\"delay_seconds\"],\"additionalProperties\":false}}", email_schedule},
+    {"email_schedule", "{\"type\":\"function\",\"name\":\"email_schedule\",\"description\":\"Schedule an exact plain-text Gmail email in the device's local timezone. Call time_now and wait for its result before resolving the date. Pass the user's AM or PM unchanged with a 12-hour time; use 24H only for a stated 24-hour time. The current email permission is checked when due.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"date\":{\"type\":\"string\",\"description\":\"Local date as YYYY-MM-DD\"},\"time\":{\"type\":\"string\",\"description\":\"Local time as HH:MM\"},\"meridiem\":{\"type\":\"string\",\"enum\":[\"AM\",\"PM\",\"24H\"]}},\"required\":[\"to\",\"subject\",\"body\",\"date\",\"time\",\"meridiem\"],\"additionalProperties\":false}}", email_schedule},
+    {"email_schedule_update", "{\"type\":\"function\",\"name\":\"email_schedule_update\",\"description\":\"Replace a scheduled email's recipient, subject, body and local send time while preserving its job ID. Call schedule_list and time_now, then wait for both results. Pass AM or PM unchanged. A running job cannot be updated.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\"},\"to\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"},\"date\":{\"type\":\"string\",\"description\":\"Local date as YYYY-MM-DD\"},\"time\":{\"type\":\"string\",\"description\":\"Local time as HH:MM\"},\"meridiem\":{\"type\":\"string\",\"enum\":[\"AM\",\"PM\",\"24H\"]}},\"required\":[\"id\",\"to\",\"subject\",\"body\",\"date\",\"time\",\"meridiem\"],\"additionalProperties\":false}}", email_schedule_update},
     {"email_search", "{\"type\":\"function\",\"name\":\"email_search\",\"description\":\"Search or list Gmail messages with Gmail query syntax. Returns a numbered page. Pass the returned page token to continue with no total-page limit. Use an empty query to list mail and an empty token for the first page.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"page_token\":{\"type\":\"string\"},\"page_size\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"required\":[\"query\",\"page_token\",\"page_size\"],\"additionalProperties\":false}}", email_search},
     {"email_get", "{\"type\":\"function\",\"name\":\"email_get\",\"description\":\"Read one Gmail message by the ID returned by email_search.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"],\"additionalProperties\":false}}", email_get},
     {"email_modify", "{\"type\":\"function\",\"name\":\"email_modify\",\"description\":\"Change a Gmail message state after reading current matching mail with email_search or email_get and waiting for its result.\",\"strict\":true,\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"action\":{\"type\":\"string\",\"enum\":[\"mark_read\",\"mark_unread\",\"archive\",\"move_to_inbox\",\"star\",\"unstar\",\"mark_spam\",\"not_spam\"]}},\"required\":[\"id\",\"action\"],\"additionalProperties\":false}}", email_modify},
@@ -160,7 +166,8 @@ static tool_mode_t tool_mode(const tool_t *tool)
         tool->execute == email_trash || tool->execute == email_untrash) {
         return permission_mode(config->email_permission);
     }
-    if ((tool->execute == email_schedule || tool->execute == email_search ||
+    if ((tool->execute == email_schedule || tool->execute == email_schedule_update ||
+         tool->execute == email_search ||
          tool->execute == email_get) && strcmp(config->email_permission, "disabled") == 0) {
         return TOOL_DISABLED;
     }
@@ -191,6 +198,31 @@ static bool json_uint(const char *json, const char *name, uint32_t *value)
     }
     *value = (uint32_t)parsed;
     return true;
+}
+
+static esp_err_t schedule_epoch(const char *arguments, char *output, size_t size,
+                                int64_t *epoch)
+{
+    char date[11];
+    char clock[6];
+    char meridiem[4];
+    time_t now = time(NULL);
+    if (now < 1700000000) {
+        strlcpy(output, "Device time is not synchronized. Connect to Wi-Fi and try again.", size);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!json_string(arguments, "date", date, sizeof(date)) ||
+        !json_string(arguments, "time", clock, sizeof(clock)) ||
+        !json_string(arguments, "meridiem", meridiem, sizeof(meridiem)) ||
+        mp_time_parse_local(date, clock, meridiem, epoch) != ESP_OK) {
+        strlcpy(output, "Use a valid local date YYYY-MM-DD, time HH:MM and meridiem AM, PM or 24H.", size);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (*epoch <= (int64_t)now) {
+        strlcpy(output, "The scheduled local time must be in the future.", size);
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
 }
 
 static void schedule_result(char *output, size_t size, const char *kind,
@@ -233,16 +265,18 @@ static esp_err_t memory_list(const char *arguments, const mp_tool_context_t *con
 
 static esp_err_t schedule_add(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
 {
-    uint32_t delay;
     uint32_t repeat;
     uint32_t id;
     int64_t epoch;
     if (!json_string(arguments, "prompt", s_arg1, sizeof(s_arg1)) ||
-        !json_uint(arguments, "delay_seconds", &delay) ||
-        !json_uint(arguments, "repeat_seconds", &repeat) || delay == 0) {
+        !json_uint(arguments, "repeat_seconds", &repeat)) {
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t error = mp_scheduler_add(context->chat_id, s_arg1, delay, repeat, &id, &epoch);
+    esp_err_t error = schedule_epoch(arguments, output, size, &epoch);
+    if (error != ESP_OK) {
+        return error;
+    }
+    error = mp_scheduler_add(context->chat_id, s_arg1, epoch, repeat, &id);
     if (error == ESP_OK) {
         schedule_result(output, size, "Job", id, epoch);
     }
@@ -261,16 +295,25 @@ static esp_err_t schedule_update(const char *arguments, const mp_tool_context_t 
 {
     (void)context;
     uint32_t id;
-    uint32_t delay;
     uint32_t repeat;
     int64_t epoch;
+    mp_schedule_info_t info;
     if (!json_uint(arguments, "id", &id) ||
         !json_string(arguments, "prompt", s_arg1, sizeof(s_arg1)) ||
-        !json_uint(arguments, "delay_seconds", &delay) ||
-        !json_uint(arguments, "repeat_seconds", &repeat) || !delay) {
+        !json_uint(arguments, "repeat_seconds", &repeat)) {
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t error = mp_scheduler_update(id, s_arg1, delay, repeat, &epoch);
+    if (!mp_scheduler_find(id, &info, output, size)) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (strncmp(output, "email_send:", 11) == 0) {
+        strlcpy(output, "Use email_schedule_update to edit a scheduled email.", size);
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t error = schedule_epoch(arguments, output, size, &epoch);
+    if (error == ESP_OK) {
+        error = mp_scheduler_update(id, s_arg1, epoch, repeat);
+    }
     if (error == ESP_OK) {
         schedule_result(output, size, "Job", id, epoch);
     } else if (error == ESP_ERR_INVALID_STATE) {
@@ -283,13 +326,14 @@ static esp_err_t schedule_snooze(const char *arguments, const mp_tool_context_t 
 {
     (void)context;
     uint32_t id;
-    uint32_t delay;
     int64_t epoch;
-    if (!json_uint(arguments, "id", &id) ||
-        !json_uint(arguments, "delay_seconds", &delay) || !delay) {
+    if (!json_uint(arguments, "id", &id)) {
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t error = mp_scheduler_snooze(id, delay, &epoch);
+    esp_err_t error = schedule_epoch(arguments, output, size, &epoch);
+    if (error == ESP_OK) {
+        error = mp_scheduler_snooze(id, epoch);
+    }
     if (error == ESP_OK) {
         schedule_result(output, size, "Job", id, epoch);
     } else if (error == ESP_ERR_INVALID_STATE) {
@@ -411,13 +455,61 @@ static esp_err_t email_send(const char *arguments, const mp_tool_context_t *cont
 
 static esp_err_t email_schedule(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)
 {
-    uint32_t delay;
     uint32_t id;
     int64_t epoch;
+    esp_err_t error = schedule_epoch(arguments, output, size, &epoch);
+    if (error != ESP_OK) {
+        return error;
+    }
+    error = email_payload(arguments, output, size);
+    if (error != ESP_OK) {
+        return error;
+    }
+    error = mp_scheduler_add(context->chat_id, output, epoch, 0, &id);
+    if (error == ESP_OK) {
+        schedule_result(output, size, "Email job", id, epoch);
+    }
+    return error;
+}
+
+static esp_err_t email_schedule_update(const char *arguments,
+                                       const mp_tool_context_t *context,
+                                       char *output, size_t size)
+{
+    (void)context;
+    uint32_t id;
+    int64_t epoch;
+    mp_schedule_info_t info;
+    if (!json_uint(arguments, "id", &id)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!mp_scheduler_find(id, &info, output, size)) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (strncmp(output, "email_send:", 11) != 0) {
+        strlcpy(output, "That job is not a scheduled email. Use schedule_update for reminders.", size);
+        return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t error = schedule_epoch(arguments, output, size, &epoch);
+    if (error == ESP_OK) {
+        error = email_payload(arguments, output, size);
+    }
+    if (error == ESP_OK) {
+        error = mp_scheduler_update(id, output, epoch, 0);
+    }
+    if (error == ESP_OK) {
+        schedule_result(output, size, "Email job", id, epoch);
+    } else if (error == ESP_ERR_INVALID_STATE) {
+        strlcpy(output, "The scheduled email is running and cannot be updated.", size);
+    }
+    return error;
+}
+
+static esp_err_t email_payload(const char *arguments, char *output, size_t size)
+{
     if (!json_string(arguments, "to", s_arg3, sizeof(s_arg3)) ||
         !json_string(arguments, "subject", s_arg2, sizeof(s_arg2)) ||
-        !json_string(arguments, "body", s_arg1, sizeof(s_arg1)) ||
-        !json_uint(arguments, "delay_seconds", &delay) || delay == 0) {
+        !json_string(arguments, "body", s_arg1, sizeof(s_arg1))) {
         return ESP_ERR_INVALID_ARG;
     }
     mp_writer_t writer;
@@ -434,11 +526,7 @@ static esp_err_t email_schedule(const char *arguments, const mp_tool_context_t *
         strlcpy(output, "Scheduled email exceeds persistent job capacity. Send it now or shorten it.", size);
         return ESP_ERR_INVALID_SIZE;
     }
-    esp_err_t error = mp_scheduler_add(context->chat_id, output, delay, 0, &id, &epoch);
-    if (error == ESP_OK) {
-        schedule_result(output, size, "Email job", id, epoch);
-    }
-    return error;
+    return ESP_OK;
 }
 
 static esp_err_t email_search(const char *arguments, const mp_tool_context_t *context, char *output, size_t size)

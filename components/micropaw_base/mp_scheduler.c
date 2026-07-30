@@ -9,6 +9,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mp_metrics.h"
+#include "mp_time.h"
 #include "nvs.h"
 #include "sdkconfig.h"
 
@@ -77,11 +78,11 @@ static void scheduler_check(void);
 esp_err_t mp_scheduler_init(mp_schedule_emit_fn emit);
 esp_err_t mp_scheduler_start(void);
 esp_err_t mp_scheduler_reset(void);
-esp_err_t mp_scheduler_add(const char *chat_id, const char *text, uint32_t delay_seconds,
-                           uint32_t repeat_seconds, uint32_t *id, int64_t *next_epoch);
-esp_err_t mp_scheduler_update(uint32_t id, const char *text, uint32_t delay_seconds,
-                              uint32_t repeat_seconds, int64_t *next_epoch);
-esp_err_t mp_scheduler_snooze(uint32_t id, uint32_t delay_seconds, int64_t *next_epoch);
+esp_err_t mp_scheduler_add(const char *chat_id, const char *text, int64_t next_epoch,
+                           uint32_t repeat_seconds, uint32_t *id);
+esp_err_t mp_scheduler_update(uint32_t id, const char *text, int64_t next_epoch,
+                              uint32_t repeat_seconds);
+esp_err_t mp_scheduler_snooze(uint32_t id, int64_t next_epoch);
 esp_err_t mp_scheduler_run(uint32_t id);
 esp_err_t mp_scheduler_delete(uint32_t id);
 esp_err_t mp_scheduler_complete(uint32_t id, bool success);
@@ -89,6 +90,7 @@ bool mp_scheduler_should_run(uint32_t id);
 esp_err_t mp_scheduler_missed_clear(void);
 size_t mp_scheduler_count(void);
 bool mp_scheduler_get(size_t index, mp_schedule_info_t *info, char *text, size_t text_size);
+bool mp_scheduler_find(uint32_t id, mp_schedule_info_t *info, char *text, size_t text_size);
 void mp_scheduler_format(char *output, size_t size);
 void mp_scheduler_missed_format(char *output, size_t size);
 
@@ -370,16 +372,13 @@ esp_err_t mp_scheduler_reset(void)
     return error;
 }
 
-esp_err_t mp_scheduler_add(const char *chat_id, const char *text, uint32_t delay_seconds,
-                           uint32_t repeat_seconds, uint32_t *id, int64_t *next_epoch)
+esp_err_t mp_scheduler_add(const char *chat_id, const char *text, int64_t next_epoch,
+                           uint32_t repeat_seconds, uint32_t *id)
 {
-    if (!chat_id || !text || !text[0] || delay_seconds == 0 ||
+    int64_t now = (int64_t)time(NULL);
+    if (!chat_id || !text || !text[0] || now < 1700000000 || next_epoch <= now ||
         strlen(chat_id) >= MP_CHAT_ID_LEN || strlen(text) >= MP_SCHEDULE_TEXT_LEN) {
         return ESP_ERR_INVALID_ARG;
-    }
-    int64_t now = (int64_t)time(NULL);
-    if (now < 1700000000) {
-        return ESP_ERR_INVALID_STATE;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     int slot = free_slot();
@@ -390,7 +389,7 @@ esp_err_t mp_scheduler_add(const char *chat_id, const char *text, uint32_t delay
     schedule_record_t *record = &s_store.records[slot];
     memset(record, 0, sizeof(*record));
     record->id = s_store.next_id++;
-    record->next_epoch = now + delay_seconds;
+    record->next_epoch = next_epoch;
     record->repeat_seconds = repeat_seconds;
     record->active = true;
     strlcpy(record->chat_id, chat_id, sizeof(record->chat_id));
@@ -399,22 +398,17 @@ esp_err_t mp_scheduler_add(const char *chat_id, const char *text, uint32_t delay
     if (error == ESP_OK && id) {
         *id = record->id;
     }
-    if (error == ESP_OK && next_epoch) {
-        *next_epoch = record->next_epoch;
-    }
     xSemaphoreGive(s_lock);
     return error;
 }
 
-esp_err_t mp_scheduler_update(uint32_t id, const char *text, uint32_t delay_seconds,
-                              uint32_t repeat_seconds, int64_t *next_epoch)
+esp_err_t mp_scheduler_update(uint32_t id, const char *text, int64_t next_epoch,
+                              uint32_t repeat_seconds)
 {
-    if (!text || !text[0] || strlen(text) >= MP_SCHEDULE_TEXT_LEN || !delay_seconds) {
-        return ESP_ERR_INVALID_ARG;
-    }
     int64_t now = (int64_t)time(NULL);
-    if (now < 1700000000) {
-        return ESP_ERR_INVALID_STATE;
+    if (!text || !text[0] || strlen(text) >= MP_SCHEDULE_TEXT_LEN ||
+        now < 1700000000 || next_epoch <= now) {
+        return ESP_ERR_INVALID_ARG;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     int index = find_slot(id);
@@ -422,28 +416,22 @@ esp_err_t mp_scheduler_update(uint32_t id, const char *text, uint32_t delay_seco
                       s_inflight[index] ? ESP_ERR_INVALID_STATE : ESP_OK;
     if (error == ESP_OK) {
         schedule_record_t *record = &s_store.records[index];
-        record->next_epoch = now + delay_seconds;
+        record->next_epoch = next_epoch;
         record->repeat_seconds = repeat_seconds;
         strlcpy(record->text, text, sizeof(record->text));
         s_retry_epoch[index] = 0;
         bool missed_changed = cancel_pending_missed(id);
         error = missed_changed ? save_both() : save_store();
-        if (error == ESP_OK && next_epoch) {
-            *next_epoch = record->next_epoch;
-        }
     }
     xSemaphoreGive(s_lock);
     return error;
 }
 
-esp_err_t mp_scheduler_snooze(uint32_t id, uint32_t delay_seconds, int64_t *next_epoch)
+esp_err_t mp_scheduler_snooze(uint32_t id, int64_t next_epoch)
 {
-    if (!delay_seconds) {
-        return ESP_ERR_INVALID_ARG;
-    }
     int64_t now = (int64_t)time(NULL);
-    if (now < 1700000000) {
-        return ESP_ERR_INVALID_STATE;
+    if (now < 1700000000 || next_epoch <= now) {
+        return ESP_ERR_INVALID_ARG;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     int index = find_slot(id);
@@ -451,13 +439,10 @@ esp_err_t mp_scheduler_snooze(uint32_t id, uint32_t delay_seconds, int64_t *next
                       s_inflight[index] ? ESP_ERR_INVALID_STATE : ESP_OK;
     if (error == ESP_OK) {
         schedule_record_t *record = &s_store.records[index];
-        record->next_epoch = now + delay_seconds;
+        record->next_epoch = next_epoch;
         s_retry_epoch[index] = 0;
         bool missed_changed = cancel_pending_missed(id);
         error = missed_changed ? save_both() : save_store();
-        if (error == ESP_OK && next_epoch) {
-            *next_epoch = record->next_epoch;
-        }
     }
     xSemaphoreGive(s_lock);
     return error;
@@ -520,7 +505,8 @@ esp_err_t mp_scheduler_complete(uint32_t id, bool success)
             }
             if (record->repeat_seconds) {
                 do {
-                    record->next_epoch += record->repeat_seconds;
+                    record->next_epoch =
+                        mp_time_repeat_next(record->next_epoch, record->repeat_seconds);
                 } while (record->next_epoch <= now);
             } else {
                 record->active = false;
@@ -597,6 +583,27 @@ bool mp_scheduler_get(size_t index, mp_schedule_info_t *info, char *text, size_t
     return found;
 }
 
+bool mp_scheduler_find(uint32_t id, mp_schedule_info_t *info, char *text, size_t text_size)
+{
+    if (!info || !text || !text_size) {
+        return false;
+    }
+    bool found = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int index = find_slot(id);
+    if (index >= 0) {
+        schedule_record_t *record = &s_store.records[index];
+        info->id = record->id;
+        info->next_epoch = record->next_epoch;
+        info->repeat_seconds = record->repeat_seconds;
+        info->running = s_inflight[index];
+        strlcpy(text, record->text, text_size);
+        found = true;
+    }
+    xSemaphoreGive(s_lock);
+    return found;
+}
+
 void mp_scheduler_format(char *output, size_t size)
 {
     if (size == 0) {
@@ -612,12 +619,18 @@ void mp_scheduler_format(char *output, size_t size)
         size_t used = strnlen(output, size);
         if (used < size) {
             char when[32];
+            const char *kind = "reminder";
+            const char *text = record->text;
+            if (strncmp(text, "email_send:", 11) == 0) {
+                kind = "email";
+                text += 11;
+            }
             format_epoch(record->next_epoch, when, sizeof(when));
             snprintf(output + used, size - used,
-                     "id=%lu at=%s repeat=%lu state=%s text=%s\n",
-                     (unsigned long)record->id, when,
+                     "id=%lu kind=%s at=%s repeat=%lu state=%s data=%s\n",
+                     (unsigned long)record->id, kind, when,
                      (unsigned long)record->repeat_seconds,
-                     s_inflight[index] ? "running" : "pending", record->text);
+                     s_inflight[index] ? "running" : "pending", text);
         }
     }
     xSemaphoreGive(s_lock);

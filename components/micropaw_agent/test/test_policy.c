@@ -38,14 +38,17 @@ TEST_CASE("schedule changes use exact prerequisite masks", "[micropaw][policy]")
 {
     TEST_ASSERT_EQUAL(MP_AGENT_READ_SCHEDULE | MP_AGENT_READ_TIME,
                       mp_agent_policy_required("schedule_update"));
+    TEST_ASSERT_EQUAL(MP_AGENT_READ_SCHEDULE | MP_AGENT_READ_TIME,
+                      mp_agent_policy_required("email_schedule_update"));
+    TEST_ASSERT_EQUAL(MP_AGENT_READ_SCHEDULE | MP_AGENT_READ_TIME,
+                      mp_agent_policy_required("schedule_snooze"));
     assert_error("schedule_update", 0,
                  "Call schedule_list and time_now, use their results, then retry schedule_update.");
     assert_error("schedule_update", MP_AGENT_READ_SCHEDULE,
                  "Call time_now, use its result, then retry schedule_update.");
     assert_error("schedule_update", MP_AGENT_READ_TIME,
                  "Call schedule_list, use its result, then retry schedule_update.");
-    for (const char **name = (const char *[]){"schedule_snooze", "schedule_run",
-                                             "schedule_delete", NULL};
+    for (const char **name = (const char *[]){"schedule_run", "schedule_delete", NULL};
          *name; name++) {
         TEST_ASSERT_EQUAL(MP_AGENT_READ_SCHEDULE, mp_agent_policy_required(*name));
         TEST_ASSERT_EQUAL(0, missing_for(*name, MP_AGENT_READ_SCHEDULE));
@@ -74,8 +77,9 @@ TEST_CASE("fallbacks belong only to requested actions", "[micropaw][policy]")
                              mp_agent_policy_fallback("email_schedule"));
     TEST_ASSERT_EQUAL_STRING("I'll check the time and set that reminder.",
                              mp_agent_policy_fallback("schedule_add"));
-    for (const char **name = (const char *[]){"schedule_update", "schedule_snooze",
-                                             "schedule_run", "schedule_delete", NULL};
+    for (const char **name = (const char *[]){"schedule_update", "email_schedule_update",
+                                             "schedule_snooze", "schedule_run",
+                                             "schedule_delete", NULL};
          *name; name++) {
         TEST_ASSERT_EQUAL_STRING("I'll check your reminders and update that one.",
                                  mp_agent_policy_fallback(*name));
@@ -107,6 +111,7 @@ TEST_CASE("slow progress advances only for a new network stage", "[micropaw][pol
     TEST_ASSERT_EQUAL(MP_AGENT_SLOW_CALENDAR,
                       mp_agent_policy_slow_stage("calendar_list"));
     TEST_ASSERT_EQUAL(0, mp_agent_policy_slow_stage("email_schedule"));
+    TEST_ASSERT_EQUAL(0, mp_agent_policy_slow_stage("email_schedule_update"));
     uint8_t reported = MP_AGENT_SLOW_EMAIL | MP_AGENT_SLOW_CALENDAR;
     TEST_ASSERT_EQUAL(0, mp_agent_policy_slow_stage("calendar_get") & ~reported);
     TEST_ASSERT_EQUAL(MP_AGENT_SLOW_WEB,

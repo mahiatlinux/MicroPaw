@@ -86,6 +86,7 @@ class FirmwareContractTest(unittest.TestCase):
         header = source("components/micropaw_agent/include/mp_agent_policy.h")
         tools = source("components/micropaw_tools/mp_tools.c")
         wifi = source("components/micropaw_net/mp_wifi.c")
+        prompt = source("prompts/system.txt")
         self.assertIn("MP_AGENT_READ_TIME = 32", header)
         self.assertIn('strcmp(name, "time_now") == 0', policy)
         self.assertIn("return MP_AGENT_READ_TIME;", policy)
@@ -99,11 +100,23 @@ class FirmwareContractTest(unittest.TestCase):
         self.assertIn('setenv("TZ", config->timezone, 1)', wifi)
         self.assertIn('strftime(output, size, "%Y-%m-%dT%H:%M:%S%z"', tools)
         add = tools[tools.index('{"schedule_add"'):tools.index('{"schedule_list"')]
-        email = tools[tools.index('{"email_schedule"'):tools.index('{"email_search"')]
+        email = tools[tools.index('{"email_schedule"'):tools.index('{"email_schedule_update"')]
         self.assertIn("Call time_now and wait for its result", add)
         self.assertNotIn("schedule_list", add)
         self.assertIn("Call time_now and wait for its result", email)
         self.assertNotIn("schedule_list", email)
+        self.assertNotIn("delay_seconds", add)
+        self.assertNotIn("delay_seconds", email)
+        for schema in [add, email]:
+            self.assertIn('\\"meridiem\\"', schema)
+            self.assertIn('\\"AM\\",\\"PM\\",\\"24H\\"', schema)
+        self.assertIn('\\"name\\":\\"email_schedule_update\\"', tools)
+        self.assertIn("email_schedule_update to edit a scheduled email", tools)
+        self.assertIn("mp_time_parse_local", tools)
+        self.assertIn("pass that meridiem unchanged", prompt)
+        time_source = source("components/micropaw_base/mp_time.c")
+        self.assertIn('strcmp(meridiem, "PM")', time_source)
+        self.assertIn("hour % 12", time_source)
 
     def test_progress_and_oled_completion_contract(self):
         agent = source("components/micropaw_agent/mp_agent.c")
@@ -272,6 +285,11 @@ class FirmwareContractTest(unittest.TestCase):
         self.assertIn("return bits & OUTBOUND_IDLE ? error", telegram)
         self.assertIn("static uint32_t s_pending", telegram)
         self.assertIn("pending_complete();", telegram)
+        self.assertIn("error = process_update(update, update_length)", telegram)
+        self.assertLess(telegram.index("error = process_update(update, update_length)"),
+                        telegram.index("s_offset = update_id + 1"))
+        self.assertIn("xQueueSendToFront(s_queue", agent)
+        self.assertIn("mp_agent_handle_command(id, s_message)", telegram)
         self.assertNotIn("xSemaphoreTake(s_enqueue_mutex, portMAX_DELAY) == pdTRUE) {\n                if (uxQueueMessagesWaiting", telegram)
         self.assertIn("close_connection(session);", net)
         self.assertIn("error = esp_http_client_open(session->handle", net)
